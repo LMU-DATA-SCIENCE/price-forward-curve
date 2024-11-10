@@ -1,10 +1,14 @@
 import pandas as pd
 import matplotlib.pyplot as plt
-import pandas as pd
 import numpy as np
 import os
 from glob import glob
 from datetime import datetime
+import plotly.express as px
+import plotly.graph_objects as go
+from plotly.subplots import make_subplots
+import plotly.colors as pc
+from scipy.optimize import minimize
 
 
 def load_forwards_df(directory='data/forwards', columns_to_drop=['Price', 'ChangeComment', 'ValidationStatus']):
@@ -46,6 +50,51 @@ def load_forwards_df(directory='data/forwards', columns_to_drop=['Price', 'Chang
     forwards.sort_values(by=['TimeStamp', 'Identifier'], inplace=True)
     return forwards
 
+def get_forwards(timestamp, start=None, end=None, periods=['D', 'W', 'WE', 'M', 'Q', 'Y']):
+    """
+    Loads forward data from CSV files, processes it, and returns a filtered DataFrame.
+
+    Parameters:
+        timestamp (str): The date or timestamp to filter records.
+        start (str, optional): Starting date for filtering 'Begin' column.
+        end (str, optional): Ending date for filtering 'End' column.
+        periods (list, optional): List of period identifiers to include (default is ['D', 'W', 'WE', 'M', 'Q', 'Y']).
+    
+    Returns:
+        pd.DataFrame: Filtered DataFrame sorted by 'Begin'.
+    """
+    
+    forwards = pd.DataFrame()
+    for file in glob('data/forwards/*.csv'):
+        forwards = pd.concat([forwards, pd.read_csv(file, sep=';')], ignore_index=True)
+    
+    forwards.drop(columns=['Price', 'ChangeComment', 'ValidationStatus'], inplace=True)
+    forwards.dropna(subset=['Settlement'], inplace=True)
+    
+    forwards['TimeStamp'] = pd.to_datetime(forwards['TimeStamp'], errors='coerce')
+    forwards['Begin'] = pd.to_datetime(forwards['Begin'], errors='coerce')
+    forwards['End'] = pd.to_datetime(forwards['End'], errors='coerce')
+    
+    forwards['Settlement'] = forwards['Settlement'].str.replace(',', '.').astype(float)
+    forwards['Open'] = forwards['Open'].str.replace(',', '.').astype(float)
+    forwards['High'] = forwards['High'].str.replace(',', '.').astype(float)
+    forwards['Low'] = forwards['Low'].str.replace(',', '.').astype(float)
+    forwards['Close'] = forwards['Close'].str.replace(',', '.').astype(float)
+    
+    forwards['Identifier'] = forwards['Identifier'].str[22:]
+    forwards.sort_values(by=['TimeStamp'], inplace=True)
+
+    data = forwards[((forwards['TimeStamp'].astype(str).str.contains(timestamp)) | 
+                     (forwards['TimeStamp'].astype(str) == timestamp)) & 
+                    (forwards.Identifier.isin(periods))]
+    
+    if end:
+        data = data[data['End'] <= pd.to_datetime(end, utc=2)]
+    if start:
+        data = data[data['Begin'] + pd.Timedelta(hours=2) >= pd.to_datetime(start, utc=2)]
+    
+    return data.sort_values(by=['Begin'])
+
 
 def plot_forwards(forwards, date, periods=['D', 'W', 'WE', 'M', 'Q', 'Y']):
     """
@@ -85,6 +134,57 @@ def plot_forwards(forwards, date, periods=['D', 'W', 'WE', 'M', 'Q', 'Y']):
 
     plt.show()
     return fig
+
+def plot_forecast_forwards(timestamp, forecast=None, data=None):
+    """
+    Plot a forecast line along with historical forward data for specified periods.
+
+    Parameters:
+    ----------
+    timestamp : str
+        The specific date or timestamp used to fetch historical forward data if `data` is not provided.
+    forecast : pd.DataFrame, optional
+        A DataFrame containing forecast data with columns 'timestamp' and 'yhat'. The forecast is
+        plotted as a single black line.
+    data : pd.DataFrame, optional
+        A DataFrame containing historical forward data with columns 'Begin', 'End', 'Settlement', 
+        and 'Identifier'. If not provided, data is fetched using `get_forwards`.
+    
+    Returns:
+    -------
+    None
+        Displays a Plotly figure with historical forwards and forecast data.
+    """
+    if not data:
+        data = get_forwards(timestamp, start=forecast['timestamp'].min(), end=forecast['timestamp'].max(), periods=['D', 'W', 'WE', 'M', 'Q', 'Y'])
+    fig = go.Figure()
+    unique_identifiers = data['Identifier'].unique()
+    color_map = {identifier: color for identifier, color in zip(unique_identifiers, pc.qualitative.Plotly)}
+    added_identifiers = set()
+    # Plot the forecast data as a black line if provided
+    if forecast:
+        fig.add_trace(go.Scatter(
+            x=forecast['timestamp'],
+            y=forecast['yhat'],
+            mode='lines',
+            name='forecast',
+            line=dict(color='black')  
+        ))
+    # Plot each forward entry as a horizontal line, with unique colors per identifier
+    for index, row in data.iterrows():
+        show_legend = row['Identifier'] not in added_identifiers
+        fig.add_trace(go.Scatter(
+            x=[row['Begin'], row['End']],
+            y=[row['Settlement'], row['Settlement']],
+            mode='lines',
+            name=row['Identifier'] if show_legend else None,
+            showlegend=show_legend,
+            line=dict(color=color_map[row['Identifier']])
+        ))
+        added_identifiers.add(row['Identifier'])
+    fig.show()
+    return fig
+
 
 def get_arbitrage_opportunities_in_forwards(forwards, date):
     """
@@ -146,4 +246,42 @@ def get_arbitrage_opportunities_in_forwards(forwards, date):
                     })
 
     return pd.DataFrame(arbitrage_opportunities)
+
+def get_restrictions(timestamp, start_date, end_date, data=None):
+    """
+    Generate a restriction matrix and adjusted settlement values for forward contracts over a specified date range.
+
+    Parameters:
+        timestamp (str): Date or timestamp used to fetch forward contracts if `data` is not provided.
+        start_date (str): Starting date for the restriction matrix.
+        end_date (str): Ending date for the restriction matrix.
+        data (pd.DataFrame, optional): DataFrame with contract data ('Begin', 'End', 'Settlement'). If not provided, 
+                                       data is retrieved using `get_forwards`.
+
+    Returns:
+        tuple (np.ndarray, np.ndarray):
+            - `C`: A 2D array where each row represents a contract and each column represents an hour in the specified 
+              range. Entries are 1 if the contract is active during that hour; otherwise, 0.
+            - `s`: A 1D array of settlement values adjusted by each contract’s active duration in hours.
+    """
+    length = ((pd.to_datetime(end_date, utc=2) - pd.to_datetime(start_date, utc=2)).days + 1) * 24
+    if data is None:
+        contracts = get_forwards(timestamp, start=start_date, end=end_date)
+    else:
+        contracts = data
+    s = contracts['Settlement'].values
+    d = len(s)
+    C = np.zeros((d, length))
+    for i in range(d):
+        start_contract = contracts.iloc[i].Begin
+        end_contract = contracts.iloc[i].End
+        
+        start_index = (start_contract - pd.to_datetime(start_date, utc=2) + pd.Timedelta(hours=1)).days * 24
+        end_index = (end_contract - pd.to_datetime(start_date, utc=2) + pd.Timedelta(hours=1)).days * 24
+        
+        C[i, start_index:end_index] = 1
+        s[i] = s[i] * (end_index - start_index)
+    
+    return C, s
+
 
