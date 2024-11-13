@@ -162,7 +162,7 @@ def plot_forecast_forwards(timestamp, forecast=None, data=None):
     color_map = {identifier: color for identifier, color in zip(unique_identifiers, pc.qualitative.Plotly)}
     added_identifiers = set()
     # Plot the forecast data as a black line if provided
-    if forecast:
+    if forecast is not None:
         fig.add_trace(go.Scatter(
             x=forecast['timestamp'],
             y=forecast['yhat'],
@@ -284,4 +284,93 @@ def get_restrictions(timestamp, start_date, end_date, data=None):
     
     return C, s
 
+def arbitrage_correction(timestamp, forecast, lambda_1=0, optimizer='trust-constr', loss='L2'):
+    """
+    Perform arbitrage correction on a forecast to ensure consistency with forward contract data.
 
+    Parameters:
+        timestamp (str): Date or timestamp used for retrieving forward contract data.
+        forecast (pd.DataFrame): DataFrame with forecast data, including 'timestamp' and 'yhat' columns.
+        lambda_1 (float, optional): Regularization parameter for smoothness in the optimization.
+        optimizer (str, optional): Optimization method used by `scipy.optimize.minimize` (default is 'trust-constr').
+        loss (str, optional): Loss function for optimization, either 'L1' for absolute error or 'L2' for squared error.
+
+    Returns:
+        tuple: 
+            - np.ndarray: Corrected forecast values, either optimized or original if optimization fails.
+            - pd.DataFrame: DataFrame containing any detected arbitrage opportunities.
+    """
+
+    start = forecast['timestamp'].min()
+    end = forecast['timestamp'].max()
+
+    # Plot initial forecast
+    plot_forecast_forwards(timestamp, forecast)
+
+    # Check for arbitrage in forward data
+    forwards = get_forwards(timestamp, start, end)
+    arbitrage_df = get_arbitrage_opportunities_in_forwards(forwards, timestamp)
+    if not arbitrage_df.empty:
+        print(f"Arbitrage opportunities found: {arbitrage_df}")
+    else:
+        print("No arbitrage opportunities found in forwards")
+
+    # Set up initial forecast values and objective function
+    yhat = np.array(forecast['yhat'].values)
+    x0 = yhat
+
+    def objective_function(x):
+        if loss == 'L1':
+            return np.sum(np.abs(x - yhat)) + lambda_1 * np.sum(np.square(np.diff(x)))
+        elif loss == 'L2':
+            return np.sum(np.square(x - yhat)) + lambda_1 * np.sum(np.square(np.diff(x)))
+        else:
+            raise ValueError("Invalid loss function. Choose 'L1' or 'L2'.")
+
+    # Get restriction matrix and constraints
+    A_eq, b_eq = get_restrictions(timestamp, start, end)
+
+    # Run optimization to correct forecast
+    result = minimize(
+        objective_function,
+        x0,
+        method=optimizer,
+        constraints={'type': 'eq', 'fun': lambda x: A_eq @ x - b_eq}
+    )
+
+    #calculate arrays of  Daily, weekly and yearly seasonalities pre and post optimization and plot comparisons
+    daily = np.zeros(24)
+    weekly = np.zeros(24*7)
+    yearly = np.zeros(24*365)
+    daily_opt = np.zeros(24)
+    weekly_opt = np.zeros(24*7)
+    yearly_opt = np.zeros(24*365)
+    for i in range(24):
+        daily[i] = np.mean(yhat[i::24])
+        daily_opt[i] = np.mean(result.x[i::24])
+    for i in range(24*7):
+        weekly[i] = np.mean(yhat[i::24*7])
+        weekly_opt[i] = np.mean(result.x[i::24*7])
+    for i in range(24*365):
+        yearly[i] = np.mean(yhat[i::24*365])
+        yearly_opt[i] = np.mean(result.x[i::24*365])
+                                
+    fig = make_subplots(rows=3, cols=1, subplot_titles=("Daily Average", "Weekly Average", "Yearly Average"))
+    fig.add_trace(go.Scatter(x=np.arange(24), y=daily, name='Initial Prediction', line=dict(color='blue')), row=1, col=1)
+    fig.add_trace(go.Scatter(x=np.arange(24), y=daily_opt, name='Arbitrage corrected', line=dict(color='red')), row=1, col=1)
+    fig.add_trace(go.Scatter(x=np.arange(24*7), y=weekly, name='Initial Prediction', line=dict(color='blue')), row=2, col=1)
+    fig.add_trace(go.Scatter(x=np.arange(24*7), y=weekly_opt, name='Arbitrage corrected', line=dict(color='red')), row=2, col=1)
+    fig.add_trace(go.Scatter(x=np.arange(24*365), y=yearly, name='Initial Prediction', line=dict(color='blue')), row=3, col=1)
+    fig.add_trace(go.Scatter(x=np.arange(24*365), y=yearly_opt, name='Arbitrage corrected', line=dict(color='red')), row=3, col=1)
+    fig.update_layout(title_text="Seasonalities comparison")
+    fig.show()
+
+    # Check optimization result and plot corrected forecast
+    if result.success:
+        print("Optimum found")
+        plot_forecast_forwards(timestamp, pd.DataFrame({'timestamp': forecast['timestamp'], 'yhat': result.x}))
+        return result.x, arbitrage_df
+    else:
+        print("Optimization failed:", result.message)
+        plot_forecast_forwards(timestamp, pd.DataFrame({'timestamp': forecast['timestamp'], 'yhat': result.x}))
+        return yhat, arbitrage_df
