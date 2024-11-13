@@ -247,6 +247,7 @@ def get_arbitrage_opportunities_in_forwards(forwards, date):
 
     return pd.DataFrame(arbitrage_opportunities)
 
+
 def get_restrictions(timestamp, start_date, end_date, data=None):
     """
     Generate a restriction matrix and adjusted settlement values for forward contracts over a specified date range.
@@ -374,3 +375,48 @@ def arbitrage_correction(timestamp, forecast, lambda_1=0, optimizer='trust-const
         print("Optimization failed:", result.message)
         plot_forecast_forwards(timestamp, pd.DataFrame({'timestamp': forecast['timestamp'], 'yhat': result.x}))
         return yhat, arbitrage_df
+    
+def get_restrictions_adrian(forwards, test_forecast):
+    """
+    Generate a restriction matrix and adjusted settlement values for forward contracts over a specified forecast period.
+
+    Parameters:
+        forwards (pd.DataFrame): DataFrame with forward contracts data.
+        test_forecast (pd.DataFrame): DataFrame with forecast data containing 'timestamp' column.
+
+    Returns:
+        tuple (np.ndarray, np.ndarray):
+            - `A_eq`: A 2D array where each row represents a contract and each column represents an hour in the forecast period.
+              Entries are 1 if the contract is active during that hour; otherwise, 0.
+            - `b_eq`: A 1D array of settlement values adjusted by each contract’s active duration in hours.
+    """
+    forwards = forwards.sort_values(by=['Begin', "Identifier"])
+
+    # Filter the forwards to only include the contracts that are active during the test forecast
+    # fwds = forwards[(forwards['Begin'] >= test_forecast['timestamp'].min()) & (forwards['End'] <= test_forecast['timestamp'].max())].copy()
+    fwds = forwards.copy()
+
+    # Get the first and last date of the test forecast
+    first_forecast_hour = test_forecast['timestamp'].min()
+    last_forecast_hour = test_forecast['timestamp'].max()
+
+    # Calculate the number of hours between the first and last timestamp including both boundaries
+    hours = (last_forecast_hour - first_forecast_hour).days * 24 + (last_forecast_hour - first_forecast_hour).seconds // 3600
+
+    # Create a zeros matrix with the number of rows equal to the number of contracts
+    # and the number of columns equal to the number of forecast hours
+    A_eq = np.zeros((len(fwds), len(test_forecast)))
+
+    for i, row in fwds.iterrows():
+        # Find the indices of the forecast hours that are within the contract hours
+        begin = row['Begin']
+        end = row['End']
+        begin_index = (begin - first_forecast_hour).days * 24
+        end_index = (end - first_forecast_hour).days * 24
+        A_eq[i, begin_index:end_index] = 1
+
+    # Calculate the total settlement price of the contracts for all contract hours
+    fwds["contract_hours"] = (fwds["End"] - fwds["Begin"]).dt.days * 24
+    b_eq = fwds['Settlement'].values * fwds['contract_hours'].values
+
+    return A_eq, b_eq
