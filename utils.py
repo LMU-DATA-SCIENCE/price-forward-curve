@@ -189,7 +189,7 @@ def plot_forecast_forwards(timestamp, forecast=None, data=None):
 def get_arbitrage_opportunities_in_forwards(forwards, date):
     """
     Check for arbitrage opportunities between different forward contracts on a given date 
-    and return the resulting opportunities as a DataFrame.
+    and return the resulting opportunities as a DataFrame.utils.py§
 
     Parameters:
     - forwards (DataFrame): DataFrame with forward curve data.
@@ -203,7 +203,7 @@ def get_arbitrage_opportunities_in_forwards(forwards, date):
     df = forwards[(forwards['TimeStamp'].astype(str).str.contains(date))|(forwards['TimeStamp'].astype(str)==date)].copy()
 
     # Calculate contract length in days
-    df['contract_length_days'] = (pd.to_datetime(df['End'], utc=True) - pd.to_datetime(df['Begin'], utc=True)).dt.days
+    df['contract_length_days'] = (pd.to_datetime(df['End'], utc=True) - pd.to_datetime(df['Begin'], utc=True)).dt.days #### check if calculation is correct
 
     # Define possible contract pairs (short vs long term)
     pairs = [('D', 'W'), ('D', 'WE'), ('W', 'M'), ('M', 'Q'), ('Q', 'Y')]
@@ -229,7 +229,8 @@ def get_arbitrage_opportunities_in_forwards(forwards, date):
                 short_begin = short_contract['End'].iloc[0]
             # Calculate the average price of the short contracts in the short_contract_series
             if short_begin == long_end:
-                mean_short = np.mean([short['Settlement'] for short in short_contract_series])
+                total_days = np.sum([short["contract_length_days"] for short in short_contract_series])
+                mean_short = np.sum([(short["contract_length_days"]/total_days) * short['Settlement'] for short in short_contract_series]) ### add weighting by short contract length!
                 long_settlement = long_contract['Settlement']
                 # Arbitrage opportunity exists if long contract price differs more than €0.00 
                 # from average price of short contracts
@@ -322,7 +323,7 @@ def arbitrage_correction(timestamp, forecast, lambda_1=0, optimizer='trust-const
 
     def objective_function(x):
         if loss == 'L1':
-            return np.sum(np.abs(x - yhat)) + lambda_1 * np.sum(np.square(np.diff(x)))
+            return np.sum(np.abs(x - yhat)) + lambda_1 * np.sum(np.square(np.diff(x))) ## diff only between days, months, years -> contract cut-off
         elif loss == 'L2':
             return np.sum(np.square(x - yhat)) + lambda_1 * np.sum(np.square(np.diff(x)))
         else:
@@ -413,6 +414,14 @@ def get_restrictions_adrian(forwards, test_forecast):
         end = row['End']
         begin_index = (begin - first_forecast_hour).days * 24
         end_index = (end - first_forecast_hour).days * 24
+        
+        print("-----")
+        print(row['Identifier'])
+        print(begin, first_forecast_hour)
+        print((begin - first_forecast_hour).days)
+        print(end_index-begin_index)
+        print("-----")
+
         A_eq[i, begin_index:end_index] = 1
 
     # Calculate the total settlement price of the contracts for all contract hours
