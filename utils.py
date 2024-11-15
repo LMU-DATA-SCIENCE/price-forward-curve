@@ -84,9 +84,18 @@ def get_forwards(timestamp, start=None, end=None, periods=['D', 'W', 'WE', 'M', 
     forwards['Identifier'] = forwards['Identifier'].str[22:]
     forwards.sort_values(by=['TimeStamp'], inplace=True)
 
-    data = forwards[((forwards['TimeStamp'].astype(str).str.contains(timestamp)) | 
-                     (forwards['TimeStamp'].astype(str) == timestamp)) & 
-                    (forwards.Identifier.isin(periods))]
+    # print(f"wrong contracts: \n {forwards[(forwards['End'] <= forwards['TimeStamp'])]}")
+
+    mask_relevant_contracts = (
+        (
+            (forwards['TimeStamp'].astype(str).str.contains(timestamp))
+            | (forwards['TimeStamp'].astype(str) == timestamp)
+        )
+        & (forwards['End'] > forwards['TimeStamp'])
+    )
+    mask_relevant_periods = forwards['Identifier'].isin(periods)
+
+    data = forwards[mask_relevant_contracts & mask_relevant_periods]
     
     if end:
         data = data[data['End'] <= pd.to_datetime(end, utc=2)]
