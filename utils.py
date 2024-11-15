@@ -95,14 +95,14 @@ def get_forwards(timestamp, start=None, end=None, periods=['D', 'W', 'WE', 'M', 
     )
     mask_relevant_periods = forwards['Identifier'].isin(periods)
 
-    data = forwards[mask_relevant_contracts & mask_relevant_periods]
+    filtered_forwards = forwards[mask_relevant_contracts & mask_relevant_periods]
     
     if end:
-        data = data[data['End'] <= pd.to_datetime(end, utc=2)]
+        filtered_forwards = filtered_forwards[filtered_forwards['End'] <= pd.to_datetime(end, utc=2)] ## TODO: check TZ handling
     if start:
-        data = data[data['Begin'] + pd.Timedelta(hours=2) >= pd.to_datetime(start, utc=2)]
+        filtered_forwards = filtered_forwards[filtered_forwards['Begin'] + pd.Timedelta(hours=2) >= pd.to_datetime(start, utc=2)] ## TODO: check TZ handling
     
-    return data.sort_values(by=['Begin'])
+    return filtered_forwards.sort_values(by=['Begin'])
 
 
 def plot_forwards(forwards, date, periods=['D', 'W', 'WE', 'M', 'Q', 'Y']):
@@ -283,6 +283,7 @@ def get_restrictions(timestamp, start_date, end_date, data=None):
     s = contracts['Settlement'].values
     d = len(s)
     C = np.zeros((d, length))
+    D = np.zeros((d, length)) # difference matrix at contract cut-off -> used in penalty
     for i in range(d):
         start_contract = contracts.iloc[i].Begin
         end_contract = contracts.iloc[i].End
@@ -332,11 +333,15 @@ def arbitrage_correction(timestamp, forecast, lambda_1=0, optimizer='trust-const
 
     def objective_function(x):
         if loss == 'L1':
-            return np.sum(np.abs(x - yhat)) + lambda_1 * np.sum(np.square(np.diff(x))) ## diff only between days, months, years -> contract cut-off
+            deviation_from_forecast = np.sum(np.abs(x - yhat))
         elif loss == 'L2':
-            return np.sum(np.square(x - yhat)) + lambda_1 * np.sum(np.square(np.diff(x)))
+            deviation_from_forecast = np.sum(np.square(x - yhat))
         else:
             raise ValueError("Invalid loss function. Choose 'L1' or 'L2'.")
+
+        penalty = lambda_1 * np.sum(np.square(np.diff(x))) ## diff only between days, months, years -> contract cut-off
+        
+        return deviation_from_forecast + penalty
 
     # Get restriction matrix and constraints
     A_eq, b_eq = get_restrictions(timestamp, start, end)
