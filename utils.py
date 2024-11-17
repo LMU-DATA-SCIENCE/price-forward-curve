@@ -260,7 +260,8 @@ def get_arbitrage_opportunities_in_forwards(forwards, date):
 
 def get_restrictions(timestamp, start_date, end_date, data=None):
     """
-    Generate a restriction matrix and adjusted settlement values for forward contracts over a specified date range.
+    Generate a restriction matrix, adjusted settlement values and a contract cut-off difference matrix
+    for forward contracts over a specified date range.
 
     Parameters:
         timestamp (str): Date or timestamp used to fetch forward contracts if `data` is not provided.
@@ -274,16 +275,19 @@ def get_restrictions(timestamp, start_date, end_date, data=None):
             - `C`: A 2D array where each row represents a contract and each column represents an hour in the specified 
               range. Entries are 1 if the contract is active during that hour; otherwise, 0.
             - `s`: A 1D array of settlement values adjusted by each contract’s active duration in hours.
+            - `D`: A 2D array representing the difference matrix at contract cut-off times, used in penalty calculation.
     """
     length = ((pd.to_datetime(end_date, utc=2) - pd.to_datetime(start_date, utc=2)).days + 1) * 24
     if data is None:
         contracts = get_forwards(timestamp, start=start_date, end=end_date)
     else:
         contracts = data
+    
     s = contracts['Settlement'].values
     d = len(s)
     C = np.zeros((d, length))
     D = np.zeros((d, length)) # difference matrix at contract cut-off -> used in penalty
+
     for i in range(d):
         start_contract = contracts.iloc[i].Begin
         end_contract = contracts.iloc[i].End
@@ -291,10 +295,21 @@ def get_restrictions(timestamp, start_date, end_date, data=None):
         start_index = (start_contract - pd.to_datetime(start_date, utc=2) + pd.Timedelta(hours=1)).days * 24
         end_index = (end_contract - pd.to_datetime(start_date, utc=2) + pd.Timedelta(hours=1)).days * 24
         
+        # CONTRAINTS
         C[i, start_index:end_index] = 1
         s[i] = s[i] * (end_index - start_index)
+
+        # PENALTY
+        # model difference between last hour of before the contract and first hour of the contract
+        if start_index > 0:
+            D[i, start_index-1] = -1
+            D[i, start_index] = 1
+        # model difference between last hour of the contract and first hour after the contract
+        if end_index < length:
+            D[i, end_index-1] = -1
+            D[i, end_index] = 1
     
-    return C, s
+    return C, s, D
 
 def arbitrage_correction(timestamp, forecast, lambda_1=0, optimizer='trust-constr', loss='L2'):
     """
@@ -331,6 +346,23 @@ def arbitrage_correction(timestamp, forecast, lambda_1=0, optimizer='trust-const
     yhat = np.array(forecast['yhat'].values)
     x0 = yhat
 
+    # Get restriction matrix and constraints
+    A_eq, b_eq, D = get_restrictions(timestamp, start, end)
+
+    # visualize diff matrix
+    # plt.figure(figsize=(10, 2))  # Adjust the figure size for better readability
+    # plt.imshow(D[:, :], cmap='binary', aspect='auto')  # 'auto' aspect ratio scales with the matrix shape
+    # plt.show()
+    # turn D into dataframe for better visualization
+    D_df = pd.DataFrame(D.T)
+    # set datetime index from forecast
+    D_df.index = forecast['timestamp']
+    fig, ax = plt.subplots(figsize=(10, 5))
+    ax.imshow(D_df)
+    plt.tight_layout()
+    plt.title('Difference Matrix')
+    plt.show()
+
     def objective_function(x):
         if loss == 'L1':
             deviation_from_forecast = np.sum(np.abs(x - yhat))
@@ -339,12 +371,12 @@ def arbitrage_correction(timestamp, forecast, lambda_1=0, optimizer='trust-const
         else:
             raise ValueError("Invalid loss function. Choose 'L1' or 'L2'.")
 
-        penalty = lambda_1 * np.sum(np.square(np.diff(x))) ## diff only between days, months, years -> contract cut-off
-        
+        # penalty = lambda_1 * np.sum(np.square(np.diff(x))) ## diff only between days, months, years -> contract cut-off
+        penalty = lambda_1 * np.sum(np.square(D @ x)) ## penalize diff at contract cut-offs
+        if penalty > 0:
+            print(f"diff vector {D @ x}")
+            print(f"penalty: {penalty} deviation: {deviation_from_forecast}")
         return deviation_from_forecast + penalty
-
-    # Get restriction matrix and constraints
-    A_eq, b_eq = get_restrictions(timestamp, start, end)
 
     # Run optimization to correct forecast
     result = minimize(
