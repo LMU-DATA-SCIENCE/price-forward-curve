@@ -10,47 +10,7 @@ from plotly.subplots import make_subplots
 import plotly.colors as pc
 from scipy.optimize import minimize
 
-
-def load_forwards_df(directory='data/forwards', columns_to_drop=['Price', 'ChangeComment', 'ValidationStatus']):
-    """
-    Load and preprocess multiple forward curves datasets from a specified directory.
-
-    Parameters:
-    - directory (str): Path to the directory containing the forward data CSV files.
-    - columns_to_drop (list): List of column names to drop, if present in each dataset.
-
-    Returns:
-    - DataFrame: Concatenated and cleaned DataFrame with all forward data.
-    """
-    dataframes = []
-    file_paths = glob(os.path.join(directory, '*.csv'))
-
-    for path in file_paths:
-        # Extract identifier from filename, e.g., 'D' from 'EEX_POWER_FUT_DE_BASE_D_2021-2024.csv'
-        identifier = os.path.basename(path).split('_')[-2]
-        df = pd.read_csv(path, sep=';')
-        if columns_to_drop:
-            df.drop(columns=columns_to_drop, inplace=True)
-        df['Identifier'] = identifier
-        dataframes.append(df)
-
-    forwards = pd.concat(dataframes)
-    forwards.dropna(subset=['Settlement'], inplace=True)
-    forwards['TimeStamp'] = pd.to_datetime(forwards['TimeStamp'], errors='coerce')
-    forwards['TimeStamp'] = forwards['TimeStamp'].apply(lambda x: x.replace(tzinfo=None))
-    forwards['Begin'] = pd.to_datetime(forwards['Begin'], errors='coerce')
-    forwards['Begin'] = forwards['Begin'].apply(lambda x: x.replace(tzinfo=None))
-    forwards['End'] = pd.to_datetime(forwards['End'], errors='coerce')
-    forwards['End'] = forwards['End'].apply(lambda x: x.replace(tzinfo=None))
-
-
-    forwards[['Settlement', 'Open', 'High', 'Low', 'Close']] = forwards[['Settlement', 'Open', 'High', 'Low', 'Close']].apply(
-        lambda x: x.str.replace(',', '.').astype(float)
-    )
-    forwards.sort_values(by=['TimeStamp', 'Identifier'], inplace=True)
-    return forwards
-
-def get_forwards(timestamp, start=None, end=None, periods=['D', 'W', 'WE', 'M', 'Q', 'Y']):
+def get_forwards(timestamp=None, start=None, end=None, periods=['D', 'W', 'WE', 'M', 'Q', 'Y']):
     """
     Loads forward data from CSV files, processes it, and returns a filtered DataFrame.
 
@@ -85,14 +45,17 @@ def get_forwards(timestamp, start=None, end=None, periods=['D', 'W', 'WE', 'M', 
     forwards.sort_values(by=['TimeStamp'], inplace=True)
 
     # print(f"wrong contracts: \n {forwards[(forwards['End'] <= forwards['TimeStamp'])]}")
-
-    mask_relevant_contracts = (
-        (
-            (forwards['TimeStamp'].astype(str).str.contains(timestamp))
-            | (forwards['TimeStamp'].astype(str) == timestamp)
+    if timestamp:
+        mask_relevant_contracts = (
+            (
+                (forwards['TimeStamp'].astype(str).str.contains(timestamp))
+                | (forwards['TimeStamp'].astype(str) == timestamp)
+            )
+            & (forwards['End'] > forwards['TimeStamp'])
         )
-        & (forwards['End'] > forwards['TimeStamp'])
-    )
+    else:
+        mask_relevant_contracts = [True] * len(forwards)
+
     mask_relevant_periods = forwards['Identifier'].isin(periods)
 
     filtered_forwards = forwards[mask_relevant_contracts & mask_relevant_periods]
@@ -103,46 +66,6 @@ def get_forwards(timestamp, start=None, end=None, periods=['D', 'W', 'WE', 'M', 
         filtered_forwards = filtered_forwards[filtered_forwards['Begin'] + pd.Timedelta(hours=2) >= pd.to_datetime(start, utc=2)] ## TODO: check TZ handling
     
     return filtered_forwards.sort_values(by=['Begin'])
-
-
-def plot_forwards(forwards, date, periods=['D', 'W', 'WE', 'M', 'Q', 'Y']):
-    """
-    Plots forward contracts for the given date and periods.
-
-    Parameters:
-    forwards (pd.DataFrame): DataFrame containing forward data with columns ['TimeStamp', 'Identifier', 'Settlement', 'Begin', 'End']
-    date (str): Date string to filter the forwards data
-    periods (list): List of period identifiers to include in the plot
-
-    Returns:
-    matplotlib.figure.Figure: The figure object containing the plot.
-    """
-    data = forwards[(forwards['TimeStamp'].astype(str).str.contains(date)) & (forwards['Identifier'].isin(periods))]
-    color_map = {
-        'D': 'red',
-        'W': 'blue',
-        'WE': 'green',
-        'M': 'purple',
-        'Q': 'orange',
-        'Y': 'black'
-    }
-    
-    fig, ax = plt.subplots(figsize=(15, 7))
-    for index, row in data.iterrows():
-        ax.hlines(y=row['Settlement'], xmin=row['Begin'], xmax=row['End'], 
-                  color=color_map.get(row['Identifier'], 'gray'), lw=2)
-    
-    # Set up legend and labels only for unique periods
-    handles = [plt.Line2D([0], [0], color=color_map[period], lw=2) for period in periods if period in color_map]
-    ax.legend(handles, periods, title="Periods")
-    
-    # Labels and Title
-    ax.set_xlabel("Time")
-    ax.set_ylabel("Settlement Price")
-    ax.set_title(f"Forwards on {date}")
-
-    plt.show()
-    return fig
 
 def plot_forecast_forwards(timestamp, forecast=None, data=None):
     """
@@ -211,8 +134,8 @@ def get_arbitrage_opportunities_in_forwards(forwards, date):
     # Filter data for the given date
     df = forwards[(forwards['TimeStamp'].astype(str).str.contains(date))|(forwards['TimeStamp'].astype(str)==date)].copy()
 
-    # Calculate contract length in days
-    df['contract_length_days'] = (pd.to_datetime(df['End'], utc=True) - pd.to_datetime(df['Begin'], utc=True)).dt.days #### check if calculation is correct
+    # Calculate contract length in hours
+    df['contract_length_hours'] = (pd.to_datetime(df['End'], utc=True) - pd.to_datetime(df['Begin'], utc=True)).dt.total_seconds() // 3600
 
     # Define possible contract pairs (short vs long term)
     pairs = [('D', 'W'), ('D', 'WE'), ('W', 'M'), ('M', 'Q'), ('Q', 'Y')]
@@ -238,8 +161,8 @@ def get_arbitrage_opportunities_in_forwards(forwards, date):
                 short_begin = short_contract['End'].iloc[0]
             # Calculate the average price of the short contracts in the short_contract_series
             if short_begin == long_end:
-                total_days = np.sum([short["contract_length_days"] for short in short_contract_series])
-                mean_short = np.sum([(short["contract_length_days"]/total_days) * short['Settlement'] for short in short_contract_series]) ### add weighting by short contract length!
+                total_hours = np.sum([short["contract_length_hours"] for short in short_contract_series])
+                mean_short = np.sum([(short["contract_length_hours"]/total_hours) * short['Settlement'] for short in short_contract_series]) ### add weighting by short contract length!
                 long_settlement = long_contract['Settlement']
                 # Arbitrage opportunity exists if long contract price differs more than €0.00 
                 # from average price of short contracts
@@ -252,7 +175,7 @@ def get_arbitrage_opportunities_in_forwards(forwards, date):
                         'end': long_end,
                         'long_settlement': long_settlement,
                         'short_settlement': mean_short,
-                        'profit': abs(long_settlement - mean_short) # should this be the absolute value?
+                        'profit': abs(long_settlement - mean_short) 
                     })
 
     return pd.DataFrame(arbitrage_opportunities)
@@ -277,7 +200,7 @@ def get_restrictions(timestamp, start_date, end_date, data=None):
             - `s`: A 1D array of settlement values adjusted by each contract’s active duration in hours.
             - `D`: A 2D array representing the difference matrix at contract cut-off times, used in penalty calculation.
     """
-    length = ((pd.to_datetime(end_date, utc=2) - pd.to_datetime(start_date, utc=2)).days + 1) * 24
+    length = int((pd.to_datetime(end_date, utc=True) - pd.to_datetime(start_date, utc=True) + pd.Timedelta(hours=1)).total_seconds() // 3600)
     if data is None:
         contracts = get_forwards(timestamp, start=start_date, end=end_date)
     else:
@@ -292,22 +215,17 @@ def get_restrictions(timestamp, start_date, end_date, data=None):
         start_contract = contracts.iloc[i].Begin
         end_contract = contracts.iloc[i].End
         
-        start_index = (start_contract - pd.to_datetime(start_date, utc=2) + pd.Timedelta(hours=1)).days * 24
-        end_index = (end_contract - pd.to_datetime(start_date, utc=2) + pd.Timedelta(hours=1)).days * 24
+        start_index = int((start_contract - pd.to_datetime(start_date, utc=2)).total_seconds() // 3600)
+        end_index = int((end_contract - pd.to_datetime(start_date, utc=2)).total_seconds() // 3600)
         
         # CONTRAINTS
         C[i, start_index:end_index] = 1
         s[i] = s[i] * (end_index - start_index)
 
         # PENALTY
-        # model difference between last hour of before the contract and first hour of the contract
         if start_index > 0:
             D[i, start_index-1] = -1
             D[i, start_index] = 1
-        # model difference between last hour of the contract and first hour after the contract
-        if end_index < length:
-            D[i, end_index-1] = -1
-            D[i, end_index] = 1
     
     return C, s, D
 
@@ -349,20 +267,6 @@ def arbitrage_correction(timestamp, forecast, lambda_1=0, optimizer='trust-const
     # Get restriction matrix and constraints
     A_eq, b_eq, D = get_restrictions(timestamp, start, end)
 
-    # visualize diff matrix
-    # plt.figure(figsize=(10, 2))  # Adjust the figure size for better readability
-    # plt.imshow(D[:, :], cmap='binary', aspect='auto')  # 'auto' aspect ratio scales with the matrix shape
-    # plt.show()
-    # turn D into dataframe for better visualization
-    D_df = pd.DataFrame(D.T)
-    # set datetime index from forecast
-    D_df.index = forecast['timestamp']
-    fig, ax = plt.subplots(figsize=(10, 5))
-    ax.imshow(D_df)
-    plt.tight_layout()
-    plt.title('Difference Matrix')
-    plt.show()
-
     def objective_function(x):
         if loss == 'L1':
             deviation_from_forecast = np.sum(np.abs(x - yhat))
@@ -373,9 +277,6 @@ def arbitrage_correction(timestamp, forecast, lambda_1=0, optimizer='trust-const
 
         # penalty = lambda_1 * np.sum(np.square(np.diff(x))) ## diff only between days, months, years -> contract cut-off
         penalty = lambda_1 * np.sum(np.square(D @ x)) ## penalize diff at contract cut-offs
-        if penalty > 0:
-            print(f"diff vector {D @ x}")
-            print(f"penalty: {penalty} deviation: {deviation_from_forecast}")
         return deviation_from_forecast + penalty
 
     # Run optimization to correct forecast
@@ -385,7 +286,7 @@ def arbitrage_correction(timestamp, forecast, lambda_1=0, optimizer='trust-const
         method=optimizer,
         constraints={'type': 'eq', 'fun': lambda x: A_eq @ x - b_eq}
     )
-
+    '''
     #calculate arrays of  Daily, weekly and yearly seasonalities pre and post optimization and plot comparisons
     daily = np.zeros(24)
     weekly = np.zeros(24*7)
@@ -412,7 +313,7 @@ def arbitrage_correction(timestamp, forecast, lambda_1=0, optimizer='trust-const
     fig.add_trace(go.Scatter(x=np.arange(24*365), y=yearly_opt, name='Arbitrage corrected', line=dict(color='red')), row=3, col=1)
     fig.update_layout(title_text="Seasonalities comparison")
     fig.show()
-
+    '''
     # Check optimization result and plot corrected forecast
     if result.success:
         print("Optimum found")
@@ -421,57 +322,4 @@ def arbitrage_correction(timestamp, forecast, lambda_1=0, optimizer='trust-const
     else:
         print("Optimization failed:", result.message)
         plot_forecast_forwards(timestamp, pd.DataFrame({'timestamp': forecast['timestamp'], 'yhat': result.x}))
-        return yhat, arbitrage_df
-    
-def get_restrictions_adrian(forwards, test_forecast):
-    """
-    Generate a restriction matrix and adjusted settlement values for forward contracts over a specified forecast period.
-
-    Parameters:
-        forwards (pd.DataFrame): DataFrame with forward contracts data.
-        test_forecast (pd.DataFrame): DataFrame with forecast data containing 'timestamp' column.
-
-    Returns:
-        tuple (np.ndarray, np.ndarray):
-            - `A_eq`: A 2D array where each row represents a contract and each column represents an hour in the forecast period.
-              Entries are 1 if the contract is active during that hour; otherwise, 0.
-            - `b_eq`: A 1D array of settlement values adjusted by each contract’s active duration in hours.
-    """
-    forwards = forwards.sort_values(by=['Begin', "Identifier"])
-
-    # Filter the forwards to only include the contracts that are active during the test forecast
-    # fwds = forwards[(forwards['Begin'] >= test_forecast['timestamp'].min()) & (forwards['End'] <= test_forecast['timestamp'].max())].copy()
-    fwds = forwards.copy()
-
-    # Get the first and last date of the test forecast
-    first_forecast_hour = test_forecast['timestamp'].min()
-    last_forecast_hour = test_forecast['timestamp'].max()
-
-    # Calculate the number of hours between the first and last timestamp including both boundaries
-    hours = (last_forecast_hour - first_forecast_hour).days * 24 + (last_forecast_hour - first_forecast_hour).seconds // 3600
-
-    # Create a zeros matrix with the number of rows equal to the number of contracts
-    # and the number of columns equal to the number of forecast hours
-    A_eq = np.zeros((len(fwds), len(test_forecast)))
-
-    for i, row in fwds.iterrows():
-        # Find the indices of the forecast hours that are within the contract hours
-        begin = row['Begin']
-        end = row['End']
-        begin_index = (begin - first_forecast_hour).days * 24
-        end_index = (end - first_forecast_hour).days * 24
-        
-        print("-----")
-        print(row['Identifier'])
-        print(begin, first_forecast_hour)
-        print((begin - first_forecast_hour).days)
-        print(end_index-begin_index)
-        print("-----")
-
-        A_eq[i, begin_index:end_index] = 1
-
-    # Calculate the total settlement price of the contracts for all contract hours
-    fwds["contract_hours"] = (fwds["End"] - fwds["Begin"]).dt.days * 24
-    b_eq = fwds['Settlement'].values * fwds['contract_hours'].values
-
-    return A_eq, b_eq
+        return result.x, arbitrage_df
