@@ -9,6 +9,9 @@ import plotly.graph_objects as go
 from plotly.subplots import make_subplots
 import plotly.colors as pc
 from scipy.optimize import minimize
+import cvxpy as cp
+import numpy as np
+from scipy.sparse import csr_matrix
 
 def get_forwards(timestamp=None, start=None, end=None, periods=['D', 'W', 'WE', 'M', 'Q', 'Y']):
     """
@@ -87,7 +90,7 @@ def plot_forecast_forwards(timestamp, forecast=None, data=None):
     None
         Displays a Plotly figure with historical forwards and forecast data.
     """
-    if not data:
+    if not data: # does not  with data given
         data = get_forwards(timestamp, start=forecast['timestamp'].min(), end=forecast['timestamp'].max(), periods=['D', 'W', 'WE', 'M', 'Q', 'Y'])
     fig = go.Figure()
     unique_identifiers = data['Identifier'].unique()
@@ -229,43 +232,67 @@ def get_restrictions(timestamp, start_date, end_date, data=None):
     
     return C, s, D
 
-def arbitrage_correction(timestamp, forecast, lambda_1=0, optimizer='trust-constr', loss='L2'):
+def optimize_with_cvxpy(yhat, A_eq, b_eq, D, lambda_1, loss):
     """
-    Perform arbitrage correction on a forecast to ensure consistency with forward contract data.
+    Perform optimization using cvxpy and OSQP solver, aligning with scipy's objective function.
 
     Parameters:
-        timestamp (str): Date or timestamp used for retrieving forward contract data.
-        forecast (pd.DataFrame): DataFrame with forecast data, including 'timestamp' and 'yhat' columns.
-        lambda_1 (float, optional): Regularization parameter for smoothness in the optimization.
-        optimizer (str, optional): Optimization method used by `scipy.optimize.minimize` (default is 'trust-constr').
-        loss (str, optional): Loss function for optimization, either 'L1' for absolute error or 'L2' for squared error.
+        yhat (np.ndarray): Forecast values.
+        A_eq (np.ndarray): Equality constraint matrix.
+        b_eq (np.ndarray): Equality constraint vector.
+        D (np.ndarray): Matrix for penalty computation.
+        lambda_1 (float): Regularization parameter.
+        loss (str): Loss function ('L1' or 'L2').
 
     Returns:
-        tuple: 
-            - np.ndarray: Corrected forecast values, either optimized or original if optimization fails.
-            - pd.DataFrame: DataFrame containing any detected arbitrage opportunities.
+        np.ndarray: Optimized forecast values.
     """
+    x = cp.Variable(len(yhat))
 
-    start = forecast['timestamp'].min()
-    end = forecast['timestamp'].max()
-
-    # Plot initial forecast
-    plot_forecast_forwards(timestamp, forecast)
-
-    # Check for arbitrage in forward data
-    forwards = get_forwards(timestamp, start, end)
-    arbitrage_df = get_arbitrage_opportunities_in_forwards(forwards, timestamp)
-    if not arbitrage_df.empty:
-        print(f"Arbitrage opportunities found: {arbitrage_df}")
+    # Deviation from forecast (L1 or L2 loss)
+    if loss == 'L1':
+        deviation_from_forecast = cp.norm1(x - yhat)
+    elif loss == 'L2':
+        deviation_from_forecast = cp.sum_squares(x - yhat)
     else:
-        print("No arbitrage opportunities found in forwards")
+        raise ValueError("Invalid loss function. Choose 'L1' or 'L2'.")
 
-    # Set up initial forecast values and objective function
-    yhat = np.array(forecast['yhat'].values)
+    # Penalty term
+    penalty = lambda_1 * cp.sum_squares(D @ x)
+
+    # Objective function: Deviation + Penalty
+    objective = cp.Minimize(deviation_from_forecast + penalty)
+
+    # Constraints
+    constraints = [A_eq @ x == b_eq]
+
+    # Solve the problem
+    problem = cp.Problem(objective, constraints)
+    problem.solve(solver=cp.OSQP)
+
+    if problem.status == cp.OPTIMAL:
+        return x.value
+    else:
+        raise ValueError(f"Optimization with cvxpy failed: {problem.status}")
+
+
+def optimize_with_scipy(yhat, A_eq, b_eq, D, lambda_1, loss, scipy_method):
+    """
+    Perform optimization using scipy.optimize.minimize.
+
+    Parameters:
+        yhat (np.ndarray): Forecast values.
+        A_eq (np.ndarray): Equality constraint matrix.
+        b_eq (np.ndarray): Equality constraint vector.
+        D (np.ndarray): Matrix for penalty computation.
+        lambda_1 (float): Regularization parameter.
+        loss (str): Loss function ('L1' or 'L2').
+        scipy_method (str): Optimization method for scipy.optimize.minimize.
+
+    Returns:
+        np.ndarray: Optimized forecast values.
+    """
     x0 = yhat
-
-    # Get restriction matrix and constraints
-    A_eq, b_eq, D = get_restrictions(timestamp, start, end)
 
     def objective_function(x):
         if loss == 'L1':
@@ -274,52 +301,58 @@ def arbitrage_correction(timestamp, forecast, lambda_1=0, optimizer='trust-const
             deviation_from_forecast = np.sum(np.square(x - yhat))
         else:
             raise ValueError("Invalid loss function. Choose 'L1' or 'L2'.")
-
-        # penalty = lambda_1 * np.sum(np.square(np.diff(x))) ## diff only between days, months, years -> contract cut-off
-        penalty = lambda_1 * np.sum(np.square(D @ x)) ## penalize diff at contract cut-offs
+        penalty = lambda_1 * np.sum(np.square(D @ x))
         return deviation_from_forecast + penalty
 
-    # Run optimization to correct forecast
+    constraints = {'type': 'eq', 'fun': lambda x: A_eq @ x - b_eq}
+
     result = minimize(
         objective_function,
         x0,
-        method=optimizer,
-        constraints={'type': 'eq', 'fun': lambda x: A_eq @ x - b_eq}
+        method=scipy_method,
+        constraints=constraints
     )
-    '''
-    #calculate arrays of  Daily, weekly and yearly seasonalities pre and post optimization and plot comparisons
-    daily = np.zeros(24)
-    weekly = np.zeros(24*7)
-    yearly = np.zeros(24*365)
-    daily_opt = np.zeros(24)
-    weekly_opt = np.zeros(24*7)
-    yearly_opt = np.zeros(24*365)
-    for i in range(24):
-        daily[i] = np.mean(yhat[i::24])
-        daily_opt[i] = np.mean(result.x[i::24])
-    for i in range(24*7):
-        weekly[i] = np.mean(yhat[i::24*7])
-        weekly_opt[i] = np.mean(result.x[i::24*7])
-    for i in range(24*365):
-        yearly[i] = np.mean(yhat[i::24*365])
-        yearly_opt[i] = np.mean(result.x[i::24*365])
-                                
-    fig = make_subplots(rows=3, cols=1, subplot_titles=("Daily Average", "Weekly Average", "Yearly Average"))
-    fig.add_trace(go.Scatter(x=np.arange(24), y=daily, name='Initial Prediction', line=dict(color='blue')), row=1, col=1)
-    fig.add_trace(go.Scatter(x=np.arange(24), y=daily_opt, name='Arbitrage corrected', line=dict(color='red')), row=1, col=1)
-    fig.add_trace(go.Scatter(x=np.arange(24*7), y=weekly, name='Initial Prediction', line=dict(color='blue')), row=2, col=1)
-    fig.add_trace(go.Scatter(x=np.arange(24*7), y=weekly_opt, name='Arbitrage corrected', line=dict(color='red')), row=2, col=1)
-    fig.add_trace(go.Scatter(x=np.arange(24*365), y=yearly, name='Initial Prediction', line=dict(color='blue')), row=3, col=1)
-    fig.add_trace(go.Scatter(x=np.arange(24*365), y=yearly_opt, name='Arbitrage corrected', line=dict(color='red')), row=3, col=1)
-    fig.update_layout(title_text="Seasonalities comparison")
-    fig.show()
-    '''
-    # Check optimization result and plot corrected forecast
+
     if result.success:
-        print("Optimum found")
-        plot_forecast_forwards(timestamp, pd.DataFrame({'timestamp': forecast['timestamp'], 'yhat': result.x}))
-        return result.x, arbitrage_df
+        return result.x
     else:
-        print("Optimization failed:", result.message)
-        plot_forecast_forwards(timestamp, pd.DataFrame({'timestamp': forecast['timestamp'], 'yhat': result.x}))
-        return result.x, arbitrage_df
+        raise ValueError(f"Optimization with scipy failed: {result.message}")
+
+
+def arbitrage_correction(forecast, forwards, lambda_1=0.1, optimizer='scipy', scipy_method='trust-constr', loss='L2'):
+    """
+    Perform arbitrage correction with scipy or cvxpy-based solvers.
+
+    Parameters:
+        forecast (pd.DataFrame): Forecast DataFrame with 'timestamp' and 'yhat' columns.
+        forwards: Forward data for arbitrage checks.
+        lambda_1 (float): Regularization parameter.
+        optimizer (str): Optimization framework ('scipy' or 'cvxpy').
+        scipy_method (str): Method for scipy optimizer (default: 'trust-constr').
+        loss (str): Loss function for scipy optimizer ('L1' or 'L2').
+
+    Returns:
+        pd.DataFrame: Corrected forecast with columns 'timestamp' and 'yhat'.
+    """
+    yhat = np.array(forecast['yhat'].values)
+
+    start_date = forecast['timestamp'].min()
+    end_date = forecast['timestamp'].max()
+    C, s, D = get_restrictions(forecast['timestamp'].iloc[0], start_date, end_date, forwards)
+    A_eq, b_eq = C, s
+
+    # Perform optimization
+    if optimizer == 'scipy':
+        corrected_values = optimize_with_scipy(yhat, A_eq, b_eq, D, lambda_1, loss, scipy_method)
+    elif optimizer == 'cvxpy':
+        corrected_values = optimize_with_cvxpy(yhat, A_eq, b_eq, D, lambda_1, loss)
+    else:
+        raise ValueError("Invalid optimizer. Choose 'scipy' or 'cvxpy'.")
+
+    # Create DataFrame with corrected forecast
+    corrected_forecast = pd.DataFrame({
+        'timestamp': forecast['timestamp'].values,
+        'yhat': corrected_values
+    })
+
+    return corrected_forecast
