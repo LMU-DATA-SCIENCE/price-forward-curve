@@ -356,3 +356,32 @@ def arbitrage_correction(forecast, forwards, lambda_1=0.1, optimizer='scipy', sc
     })
 
     return corrected_forecast
+
+def partition_forwards(forwards):
+    """
+    Partition timeline into granular intervals based on forward contract data and calculate the corresponding prices.
+
+    Parameters:
+        forwards (pd.DataFrame): DataFrame with forward contract data.
+
+    Returns:
+        tuple (list, np.ndarray):
+            - `timestamps`: List of timestamps t_0, t_1, ..., t_n.
+            - `new_prices`: Array of new prices F_i for each interval (t_i, t_{i+1}).
+
+    """
+    timestamps = sorted(set(forwards['Begin']).union(set(forwards['End'])))
+    durations = [(timestamps[i+1] - timestamps[i]).total_seconds() // 3600 for i in range(len(timestamps)-1)]
+    #create restriction matrix A such that Ax=b guarantees that all initial prices are preserved
+    A = np.zeros(shape = (len(forwards),len(timestamps)-1))
+    b = np.array(forwards['Settlement'])
+    for index, (begin,end) in enumerate(zip(forwards['Begin'],forwards['End'])):
+        begin_index = timestamps.index(begin)
+        end_index = timestamps.index(end)
+        total_time = (end - begin).total_seconds() // 3600
+        for i in range(begin_index,end_index):
+            A[index,i] = durations[i]/total_time   
+    #solve for new prices
+    new_prices = np.linalg.lstsq(A,b,rcond=None)[0]
+
+    return timestamps, new_prices
