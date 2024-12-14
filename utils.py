@@ -12,6 +12,7 @@ from scipy.optimize import minimize
 import cvxpy as cp
 import numpy as np
 from scipy.sparse import csr_matrix
+from scipy.interpolate import PPoly
 
 def get_forwards(timestamp=None, start=None, end=None, periods=['D', 'W', 'WE', 'M', 'Q', 'Y']):
     """
@@ -117,7 +118,6 @@ def plot_forecast_forwards(timestamp, forecast=None, data=None):
             line=dict(color=color_map[row['Identifier']])
         ))
         added_identifiers.add(row['Identifier'])
-    fig.show()
     return fig
 
 
@@ -569,3 +569,28 @@ def solve_linear_system(H, A, b):
     lam = solution[n:]
 
     return x, lam
+
+def construct_epsilon(x, nodes):
+    """
+    Construct the piecewise polynomial function ε(t).
+
+    Parameters:
+        x (array): Coefficients [a1, b1, c1, d1, e1, ..., an, bn, cn, dn, en].
+        nodes (list): List of time nodes [t0, t1, t2, ..., tn].
+
+    Returns:
+        PPoly: A piecewise polynomial object from scipy.
+    """
+    n_segments = len(nodes) - 1  # Number of segments between nodes
+    degree = 4  # Degree of each polynomial segment
+
+    # Reshape x into (n_segments, degree+1) matrix for coefficients
+    coefficients = np.array(x).reshape(n_segments, degree + 1)
+
+    # Reverse coefficients (PPoly expects highest degree first)
+    coeffs_reversed = [coefs[::-1] for coefs in coefficients]
+
+    # Construct piecewise polynomial using scipy's PPoly
+    pp = PPoly(np.array(coeffs_reversed).T, nodes)
+    return pp
+
