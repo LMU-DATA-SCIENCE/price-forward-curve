@@ -562,8 +562,8 @@ def solve_linear_system(H, A, b):
     rhs = np.concatenate((np.zeros(n), b))
 
     # Solve the system using a solver for linear equations
-    solution = np.linalg.solve(K, rhs)[0]
-
+    solution = np.linalg.solve(K, rhs)
+    
     # Extract x and λ
     x = solution[:n]
     lam = solution[n:]
