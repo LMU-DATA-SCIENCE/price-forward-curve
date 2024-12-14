@@ -377,11 +377,11 @@ def partition_forwards(forwards, begin_forecast):
     """
     timestamps = sorted(set(forwards['Begin']).union(set(forwards['End'])))
 
-    #convert timestamps to hours since begin_forecast
+    # convert timestamps to hours since begin_forecast
     if type(begin_forecast) == str:
         begin_forecast = pd.to_datetime(begin_forecast,utc=True)
     t = [int((timestamp - begin_forecast).total_seconds() // 3600) for timestamp in timestamps]
-    #bring forwards into the same format
+    # bring forwards into the same format
     F = pd.DataFrame(columns=['F_C', 'T_s', 'T_e'])
     for i, row in forwards.iterrows():
         T_s = int((row['Begin'] - begin_forecast).total_seconds() // 3600)
@@ -389,6 +389,7 @@ def partition_forwards(forwards, begin_forecast):
         F.loc[i] = [row['Settlement'], T_s, T_e]
     F['T_s'] = F['T_s'].astype(int)
     F['T_e'] = F['T_e'].astype(int)
+    F.reset_index(inplace=True, drop=True)
     return t, F
 
 def construct_H(t):
@@ -439,24 +440,25 @@ def construct_H(t):
     
     return H
 
-def construct_A_and_b(t, F, s_t):
+def construct_A_and_b(t, forwards, s_t):
     """
     Constructs the restriction matrix A and the vector b for constraints (6)-(10).
     
     Parameters:
         t (array-like): Knot vector with n+1 elements [t_0, t_1, ..., t_n].
-        F (array-like): Future price vector for m contracts splitted up into disjunct periods t.
+        forwards df: [F_C, T_s, T_e] as row per forwards contract with T_s and T_e integer hours starting at forecast begin
         s_t (array-like): Seasonality vector with hourly price forecast covering at least the period [t_0, t_n].
         
     Returns:
         A (ndarray): Restriction matrix for constraints.
         b (ndarray): Vector for the right-hand side of constraints.
     """
-    n = len(t) - 1  # Number of intervals
-    m = len(F)  # Number of market prices
+    n = len(t) - 1  # Number of granular cutoffs
+    # t has indices from 0 to n
+    m = len(forwards)  # Number of market prices
     
     # Total number of constraints
-    num_constraints = (n - 1) * 3 + 2 + m
+    num_constraints = (n - 1) * 3 + 1 + m
     num_variables = 5 * n
     A = np.zeros((num_constraints, num_variables))
     b = np.zeros(num_constraints)
@@ -464,56 +466,67 @@ def construct_A_and_b(t, F, s_t):
     constraint_idx = 0
     
     # Continuity constraints (6)
-    for i in range(n - 1):
-        contract1_start_idx = 5 * i
-        contract2_end_idx = 5 * (i + 2) # spline i and i+1
+    for i in range(1, n): # from contract cut-off 1 to n-1 
+        contract1_start_idx = 5 * (i - 1)
+        contract2_end_idx = 5 * (i + 1) # spline i and i+1
 
         A[constraint_idx, contract1_start_idx:contract2_end_idx] = [
-            t[i+1]**4, t[i+1]**3, t[i+1]**2, t[i+1], 1, 
-            -t[i+1]**4, -t[i+1]**3, -t[i+1]**2, -t[i+1], -1
+            t[i]**4, t[i]**3, t[i]**2, t[i], 1, 
+            -t[i]**4, -t[i]**3, -t[i]**2, -t[i], -1
         ]
         constraint_idx += 1
 
     # First derivative continuity (7)
-    for i in range(n - 1):
-        contract1_start_idx = 5 * i
-        contract2_end_idx = 5 * (i + 2) # spline i and i+1
+    for i in range(1, n): # from contract cut-off 1 to n-1 
+        contract1_start_idx = 5 * (i - 1)
+        contract2_end_idx = 5 * (i + 1) # spline i and i+1
 
         A[constraint_idx, contract1_start_idx:contract2_end_idx] = [
-            4 * t[i+1]**3, 3 * t[i+1]**2, 2 * t[i+1], 1, 0,
-            -4 * t[i+1]**3, -3 * t[i+1]**2, -2 * t[i+1], -1, 0
+            4 * t[i]**3, 3 * t[i]**2, 2 * t[i], 1, 0,
+            -4 * t[i]**3, -3 * t[i]**2, -2 * t[i], -1, 0
         ]
         constraint_idx += 1
 
     # Second derivative continuity (8)
-    for i in range(n - 1):
-        contract1_start_idx = 5 * i
-        contract2_end_idx = 5 * (i + 2) # spline i and i+1
+    for i in range(1, n): # from contract cut-off 1 to n-1 
+        contract1_start_idx = 5 * (i - 1)
+        contract2_end_idx = 5 * (i + 1) # spline i and i+1
 
         A[constraint_idx, contract1_start_idx:contract2_end_idx] = [
-            12 * t[i+1]**2, 6 * t[i+1], 2, 0, 0,
-            -12 * t[i+1]**2, -6 * t[i+1], -2, 0, 0
+            12 * t[i]**2, 6 * t[i], 2, 0, 0,
+            -12 * t[i]**2, -6 * t[i], -2, 0, 0
         ]
         constraint_idx += 1
 
     # Natural boundary conditions (9)
-    A[constraint_idx, -5:] = [4 * t[-1]**3, 3 * t[-1]**2, 2 * t[-1], 1, 0] # 1st derivative = 0 for last spline
+    A[constraint_idx, -5:] = [4 * t[-1]**3, 3 * t[-1]**2, 2 * t[-1], 1, 0] # 1st derivative at t_n = 0 for last spline
     constraint_idx += 1
 
     # Market price constraints (10)
-    for i in range(m):
-        T_s, T_e = t[i], t[i + 1]  # Settlement period
-        A[constraint_idx, 5 * i:5 * (i + 1)] = [
-            (T_e**5 - T_s**5) / 5,
-            (T_e**4 - T_s**4) / 4,
-            (T_e**3 - T_s**3) / 3,
-            (T_e**2 - T_s**2) / 2,
-            (T_e - T_s),
-        ]
+    for _, contract in forwards.iterrows():
+        T_s = int(contract["T_s"])
+        T_e = int(contract["T_e"])
+        F_C = contract["F_C"]
 
-        integral_s = np.sum(s_t[(s_t.index >= T_s) & (s_t.index < T_e)])
+        print(T_s, T_e)
+
+        # iterate over all t[i] that in the between T_s and T_e
+        for i in range(n): # from contract cut-off 0 to n-1 that are in the contract period
+            if t[i] >= T_s and t[i] < T_e:
+                A[constraint_idx, 5 * i:5 * (i + 1)] = np.array(
+                    [
+                        (t[i+1]**5 - t[i]**5) / 5, # * a_i
+                        (t[i+1]**4 - t[i]**4) / 4, # * b_i
+                        (t[i+1]**3 - t[i]**3) / 3, # * c_i
+                        (t[i+1]**2 - t[i]**2) / 2, # * d_i
+                        (t[i+1] - t[i]),        # * e_i
+                    ]
+                )
+                # -> total price of the contract for epsilon_i
+
+        integral_s = np.sum(s_t[T_s:T_e])
         # F[i] and integral_s are both average hourly prices, so we multiply by the length of the contract to get the total price
-        b[constraint_idx] = (F[i] + integral_s) * (T_e - T_s)
+        b[constraint_idx] = (F_C * (T_e - T_s)) - integral_s
         constraint_idx += 1
 
     return A, b
@@ -535,7 +548,7 @@ def solve_linear_system(H, A, b):
             λ (ndarray): Lagrange multipliers for constraints.
     """
     # Ensure H is symmetric
-    assert H.shape[0] == H.shape[1], "H must be a square matrix"
+    assert (H.T == H).all(), "H must be a symmetric matrix"
 
     # Dimensions
     n = H.shape[0]  # Size of H
@@ -549,7 +562,7 @@ def solve_linear_system(H, A, b):
     rhs = np.concatenate((np.zeros(n), b))
 
     # Solve the system using a solver for linear equations
-    solution = np.linalg.solve(K, rhs)
+    solution = np.linalg.lstsq(K, rhs)[0]
 
     # Extract x and λ
     x = solution[:n]
