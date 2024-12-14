@@ -371,28 +371,25 @@ def partition_forwards(forwards, begin_forecast):
 
     Returns:
         tuple (list, np.ndarray):
-            - `timestamps`: List of timestamps t_0, t_1, ..., t_n.
-            - `new_prices`: Array of new prices F_i for each interval (t_i, t_{i+1}).
+            - `t`: List of timestamps t_0, t_1, ..., t_n.
+            - `F`: DataFrame with (F_C,T_s,T_e) for each contract
 
     """
     timestamps = sorted(set(forwards['Begin']).union(set(forwards['End'])))
-    durations = [(timestamps[i+1] - timestamps[i]).total_seconds() // 3600 for i in range(len(timestamps)-1)]
-    # create restriction matrix A such that Ax=b guarantees that all initial prices are preserved
-    A = np.zeros(shape = (len(forwards),len(timestamps)-1))
-    b = np.array(forwards['Settlement'])
-    for index, (begin,end) in enumerate(zip(forwards['Begin'],forwards['End'])):
-        begin_index = timestamps.index(begin)
-        end_index = timestamps.index(end)
-        total_time = (end - begin).total_seconds() // 3600
-        for i in range(begin_index,end_index):
-            A[index,i] = durations[i]/total_time 
-    # solve for new prices
-    new_prices = np.linalg.lstsq(A,b,rcond=None)[0]
+
     #convert timestamps to hours since begin_forecast
     if type(begin_forecast) == str:
-        begin_forecast = pd.to_datetime(begin_forecast)
-    timestamps = [(timestamp - begin_forecast).total_seconds() // 3600 for timestamp in timestamps]
-    return timestamps, new_prices
+        begin_forecast = pd.to_datetime(begin_forecast,utc=True)
+    t = [int((timestamp - begin_forecast).total_seconds() // 3600) for timestamp in timestamps]
+    #bring forwards into the same format
+    F = pd.DataFrame(columns=['F_C', 'T_s', 'T_e'])
+    for i, row in forwards.iterrows():
+        T_s = int((row['Begin'] - begin_forecast).total_seconds() // 3600)
+        T_e = int((row['End'] - begin_forecast).total_seconds() // 3600)
+        F.loc[i] = [row['Settlement'], T_s, T_e]
+    F['T_s'] = F['T_s'].astype(int)
+    F['T_e'] = F['T_e'].astype(int)
+    return t, F
 
 def construct_H(t):
     """
