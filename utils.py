@@ -357,6 +357,11 @@ def arbitrage_correction(forecast, forwards, lambda_1=0.1, optimizer='scipy', sc
 
     return corrected_forecast
 
+
+###################################################
+############# Benth 2007 implementation ###########
+###################################################
+
 def partition_forwards(forwards):
     """
     Partition timeline into granular intervals based on forward contract data and calculate the corresponding prices.
@@ -385,3 +390,130 @@ def partition_forwards(forwards):
     new_prices = np.linalg.lstsq(A,b,rcond=None)[0]
 
     return timestamps, new_prices
+
+def construct_H(t):
+    """
+    Constructs the symmetric matrix H for the quadratic term based on the knot vector t.
+    
+    Parameters:
+        t (array-like): Granular vector of knots, with n+1 elements (t_0, t_1, ..., t_n).
+    
+    Returns:
+        H (ndarray): (5n x 5n) symmetric matrix.
+    """
+    n = len(t) - 1  # Number of intervals
+    H = np.zeros((5 * n, 5 * n))  # Initialize the full matrix
+    
+    # Numerical coefficients matrix (static values)
+    coeff_matrix = np.array([
+        [144/5, 18, 8, 0, 0],
+        [18,    12, 6, 0, 0],
+        [8,      6, 4, 0, 0],
+        [0,      0, 0, 0, 0],
+        [0,      0, 0, 0, 0]
+    ])
+
+    for i in range(n):
+        idx = 5 * i  # Starting index for the block
+        
+        delta_1 = t[i+1] - t[i]
+        delta_2 = t[i+1]**2 - t[i]**2
+        delta_3 = t[i+1]**3 - t[i]**3
+        delta_4 = t[i+1]**4 - t[i]**4
+        delta_5 = t[i+1]**5 - t[i]**5
+
+        # Calculate delta terms for this interval
+        delta_matrix = np.array([
+            [delta_5, delta_4, delta_3, 0, 0],
+            [delta_4, delta_3, delta_2, 0, 0],
+            [delta_3, delta_2, delta_1, 0, 0],
+            [0, 0, 0, 0, 0],
+            [0, 0, 0, 0, 0]
+        ])
+        
+        # Define the 5x5 block for this interval
+        h_i = coeff_matrix * delta_matrix
+        
+        # Place the block in the appropriate location in H
+        H[idx:idx+5, idx:idx+5] = h_i
+    
+    return H
+
+def construct_A_and_b(t, F, s_t):
+    """
+    Constructs the restriction matrix A and the vector b for constraints (6)-(10).
+    
+    Parameters:
+        t (array-like): Knot vector with n+1 elements [t_0, t_1, ..., t_n].
+        F (array-like): Future price vector for m contracts splitted up into disjunct periods t.
+        s_t (array-like): Seasonality vector with hourly price forecast covering at least the period [t_0, t_n].
+        
+    Returns:
+        A (ndarray): Restriction matrix for constraints.
+        b (ndarray): Vector for the right-hand side of constraints.
+    """
+    n = len(t) - 1  # Number of intervals
+    m = len(F)  # Number of market prices
+    
+    # Total number of constraints
+    num_constraints = (n - 1) * 3 + 2 + m
+    num_variables = 5 * n
+    A = np.zeros((num_constraints, num_variables))
+    b = np.zeros(num_constraints)
+    
+    constraint_idx = 0
+    
+    # Continuity constraints (6)
+    for i in range(n - 1):
+        contract1_start_idx = 5 * i
+        contract2_end_idx = 5 * (i + 2) # spline i and i+1
+
+        A[constraint_idx, contract1_start_idx:contract2_end_idx] = [
+            t[i+1]**4, t[i+1]**3, t[i+1]**2, t[i+1], 1, 
+            -t[i+1]**4, -t[i+1]**3, -t[i+1]**2, -t[i+1], -1
+        ]
+        constraint_idx += 1
+
+    # First derivative continuity (7)
+    for i in range(n - 1):
+        contract1_start_idx = 5 * i
+        contract2_end_idx = 5 * (i + 2) # spline i and i+1
+
+        A[constraint_idx, contract1_start_idx:contract2_end_idx] = [
+            4 * t[i+1]**3, 3 * t[i+1]**2, 2 * t[i+1], 1, 0,
+            -4 * t[i+1]**3, -3 * t[i+1]**2, -2 * t[i+1], -1, 0
+        ]
+        constraint_idx += 1
+
+    # Second derivative continuity (8)
+    for i in range(n - 1):
+        contract1_start_idx = 5 * i
+        contract2_end_idx = 5 * (i + 2) # spline i and i+1
+
+        A[constraint_idx, contract1_start_idx:contract2_end_idx] = [
+            12 * t[i+1]**2, 6 * t[i+1], 2, 0, 0,
+            -12 * t[i+1]**2, -6 * t[i+1], -2, 0, 0
+        ]
+        constraint_idx += 1
+
+    # Natural boundary conditions (9)
+    A[constraint_idx, -5:] = [4 * t[-1]**3, 3 * t[-1]**2, 2 * t[-1], 1, 0] # 1st derivative = 0 for last spline
+    constraint_idx += 1
+
+    # Market price constraints (10)
+    for i in range(m):
+        T_s, T_e = t[i], t[i + 1]  # Settlement period
+        A[constraint_idx, 5 * i:5 * (i + 1)] = [
+            (T_e**5 - T_s**5) / 5,
+            (T_e**4 - T_s**4) / 4,
+            (T_e**3 - T_s**3) / 3,
+            (T_e**2 - T_s**2) / 2,
+            (T_e - T_s),
+        ]
+
+        integral_s = np.sum(s_t[(s_t.index >= T_s) & (s_t.index < T_e)])
+        # F[i] and integral_s are both average hourly prices, so we multiply by the length of the contract to get the total price
+        b[constraint_idx] = (F[i] + integral_s) * (T_e - T_s)
+        constraint_idx += 1
+
+    return A, b
