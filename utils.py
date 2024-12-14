@@ -562,7 +562,7 @@ def solve_linear_system(H, A, b):
     rhs = np.concatenate((np.zeros(n), b))
 
     # Solve the system using a solver for linear equations
-    solution = np.linalg.lstsq(K, rhs)[0]
+    solution = np.linalg.solve(K, rhs)[0]
 
     # Extract x and λ
     x = solution[:n]
@@ -570,27 +570,24 @@ def solve_linear_system(H, A, b):
 
     return x, lam
 
-def construct_epsilon(x, nodes):
+def construct_epsilon(x, t):
     """
     Construct the piecewise polynomial function ε(t).
 
     Parameters:
         x (array): Coefficients [a1, b1, c1, d1, e1, ..., an, bn, cn, dn, en].
-        nodes (list): List of time nodes [t0, t1, t2, ..., tn].
+        t (list): List of time nodes [t0, t1, t2, ..., tn].
 
     Returns:
         PPoly: A piecewise polynomial object from scipy.
     """
-    n_segments = len(nodes) - 1  # Number of segments between nodes
+    n_segments = len(t) - 1  # Number of segments between nodes
     degree = 4  # Degree of each polynomial segment
 
     # Reshape x into (n_segments, degree+1) matrix for coefficients
     coefficients = np.array(x).reshape(n_segments, degree + 1)
 
-    # Reverse coefficients (PPoly expects highest degree first)
-    coeffs_reversed = [coefs[::-1] for coefs in coefficients]
-
     # Construct piecewise polynomial using scipy's PPoly
-    pp = PPoly(np.array(coeffs_reversed).T, nodes)
+    pp = PPoly(np.array(coefficients).T, t, extrapolate=False)
     return pp
 
