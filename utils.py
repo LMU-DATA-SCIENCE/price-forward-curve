@@ -362,7 +362,7 @@ def arbitrage_correction(forecast, forwards, lambda_1=0.1, optimizer='scipy', sc
 ############# Benth 2007 implementation ###########
 ###################################################
 
-def partition_forwards(forwards):
+def partition_forwards(forwards, begin_forecast):
     """
     Partition timeline into granular intervals based on forward contract data and calculate the corresponding prices.
 
@@ -388,6 +388,10 @@ def partition_forwards(forwards):
             A[index,i] = durations[i]/total_time   
     #solve for new prices
     new_prices = np.linalg.lstsq(A,b,rcond=None)[0]
+    #convert timestamps to hours since begin_forecast
+    if type(begin_forecast) == str:
+        begin_forecast = pd.to_datetime(begin_forecast)
+    timestamps = [(timestamp - begin_forecast).total_seconds() // 3600 for timestamp in timestamps]
 
     return timestamps, new_prices
 
