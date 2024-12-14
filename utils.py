@@ -377,7 +377,7 @@ def partition_forwards(forwards, begin_forecast):
     """
     timestamps = sorted(set(forwards['Begin']).union(set(forwards['End'])))
     durations = [(timestamps[i+1] - timestamps[i]).total_seconds() // 3600 for i in range(len(timestamps)-1)]
-    #create restriction matrix A such that Ax=b guarantees that all initial prices are preserved
+    # create restriction matrix A such that Ax=b guarantees that all initial prices are preserved
     A = np.zeros(shape = (len(forwards),len(timestamps)-1))
     b = np.array(forwards['Settlement'])
     for index, (begin,end) in enumerate(zip(forwards['Begin'],forwards['End'])):
@@ -385,14 +385,13 @@ def partition_forwards(forwards, begin_forecast):
         end_index = timestamps.index(end)
         total_time = (end - begin).total_seconds() // 3600
         for i in range(begin_index,end_index):
-            A[index,i] = durations[i]/total_time   
-    #solve for new prices
+            A[index,i] = durations[i]/total_time 
+    # solve for new prices
     new_prices = np.linalg.lstsq(A,b,rcond=None)[0]
     #convert timestamps to hours since begin_forecast
     if type(begin_forecast) == str:
         begin_forecast = pd.to_datetime(begin_forecast)
     timestamps = [(timestamp - begin_forecast).total_seconds() // 3600 for timestamp in timestamps]
-
     return timestamps, new_prices
 
 def construct_H(t):
@@ -521,3 +520,42 @@ def construct_A_and_b(t, F, s_t):
         constraint_idx += 1
 
     return A, b
+
+def solve_linear_system(H, A, b):
+    """
+    Solves the linear system:
+        [2H  A^T] [x]   = [0]
+        [A   0 ] [λ]     [b]
+    
+    Parameters:
+        H (ndarray): Symmetric matrix H (quadratic term).
+        A (ndarray): Restriction matrix.
+        b (ndarray): Right-hand side vector of constraints.
+        
+    Returns:
+        tuple: (x, λ) where
+            x (ndarray): Solution vector for the main variable.
+            λ (ndarray): Lagrange multipliers for constraints.
+    """
+    # Ensure H is symmetric
+    assert H.shape[0] == H.shape[1], "H must be a square matrix"
+
+    # Dimensions
+    n = H.shape[0]  # Size of H
+    m = A.shape[0]  # Number of constraints
+
+    # Build the full linear system
+    K = np.block([
+        [2 * H, A.T],
+        [A, np.zeros((m, m))]
+    ])
+    rhs = np.concatenate((np.zeros(n), b))
+
+    # Solve the system using a solver for linear equations
+    solution = np.linalg.solve(K, rhs)
+
+    # Extract x and λ
+    x = solution[:n]
+    lam = solution[n:]
+
+    return x, lam
