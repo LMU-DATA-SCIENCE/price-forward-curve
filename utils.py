@@ -591,3 +591,66 @@ def construct_epsilon(x, t):
     pp = PPoly(np.array(coefficients).T, t, extrapolate=False)
     return pp
 
+def filter_independent(forwards):
+    """
+    Filters and keeps only the independent forward contracts.
+    
+    A contract is dependent if there exists other contracts c1, ..., cn such that:
+    - begin(c) = begin(c1)
+    - end(c) = end(cn)
+    - end(ci) = begin(ci+1)
+    
+    Parameters:
+    forwards (pd.DataFrame): A DataFrame with 'Begin' and 'End' columns as datetime objects.
+    
+    Returns:
+    pd.DataFrame: A DataFrame with only the independent contracts, preserving all columns.
+    """
+    # Sort the DataFrame by Begin and End
+    forwards = forwards.sort_values(by=["Begin", "End"]).reset_index(drop=True)
+
+    # Function to check dependency
+    def is_dependent(contract, contracts):
+        """
+        Check if a contract is dependent based on the given rules.
+        
+        Parameters:
+        contract (tuple): A tuple (begin, end) of the current contract.
+        contracts (list): A list of tuples (begin, end) for other contracts (excluding the current one).
+        
+        Returns:
+        bool: True if the contract is dependent, False otherwise.
+        """
+        begin_c, end_c = contract
+        # Find contracts that start where this one starts
+        starts_at_begin = [c for c in contracts if c[0] == begin_c]
+        # Check if there is a sequence that matches the dependency conditions
+        for start_contract in starts_at_begin:
+            sequence = [start_contract]
+            while sequence[-1][1] < end_c:
+                next_contract = next(
+                    (c for c in contracts if c[0] == sequence[-1][1]), None
+                )
+                if next_contract:
+                    sequence.append(next_contract)
+                else:
+                    break
+            # Check if the sequence ends where this contract ends
+            if sequence[-1][1] == end_c:
+                return True
+        return False
+
+    # Iterate over the contracts
+    independent_indices = []
+    all_contracts = [(row["Begin"], row["End"]) for _, row in forwards.iterrows()]
+    for i, row in forwards.iterrows():
+        current_contract = (row["Begin"], row["End"])
+        # Exclude the current contract from the list of contracts to check
+        other_contracts = [c for c in all_contracts if c != current_contract]
+        if not is_dependent(current_contract, other_contracts):
+            independent_indices.append(i)
+
+    # Use the indices to filter the original DataFrame
+    independent_df = forwards.loc[independent_indices].reset_index(drop=True)
+    return independent_df
+
