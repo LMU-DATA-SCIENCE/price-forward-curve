@@ -91,7 +91,7 @@ def plot_forecast_forwards(timestamp, forecast=None, data=None):
     None
         Displays a Plotly figure with historical forwards and forecast data.
     """
-    if not data: # does not  with data given
+    if data is not None: # does not  with data given
         data = get_forwards(timestamp, start=forecast['timestamp'].min(), end=forecast['timestamp'].max(), periods=['D', 'W', 'WE', 'M', 'Q', 'Y'])
     fig = go.Figure()
     unique_identifiers = data['Identifier'].unique()
@@ -570,26 +570,27 @@ def solve_linear_system(H, A, b):
 
     return x, lam
 
-def construct_epsilon(x, t):
+def epsilon(x, tn, t):
     """
-    Construct the piecewise polynomial function ε(t).
+    Return value of the piecewise polynomial function ε(t) at time t.
 
     Parameters:
         x (array): Coefficients [a1, b1, c1, d1, e1, ..., an, bn, cn, dn, en].
-        t (list): List of time nodes [t0, t1, t2, ..., tn].
+        tn (array): Knot vector [t0, t1, ..., tn].
+        t (float): Time value t.
 
     Returns:
         PPoly: A piecewise polynomial object from scipy.
     """
-    n_segments = len(t) - 1  # Number of segments between nodes
-    degree = 4  # Degree of each polynomial segment
+    #find i such that t_i <= t < t_i+1
+    if t < tn[0] or t > tn[-1]:
+        return 0
+    for i in range(len(tn)-1):
+        if tn[i] <= t <= tn[i+1]:
+            break
+    a, b, c, d, e = x[5*i:5*(i+1)]
+    return a*(t**4) + b*(t**3) + c*(t**2) + d*t + e
 
-    # Reshape x into (n_segments, degree+1) matrix for coefficients
-    coefficients = np.array(x).reshape(n_segments, degree + 1)
-
-    # Construct piecewise polynomial using scipy's PPoly
-    pp = PPoly(np.array(coefficients).T, t, extrapolate=False)
-    return pp
 
 def filter_independent(forwards):
     """
