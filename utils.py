@@ -508,8 +508,6 @@ def construct_A_and_b(t, forwards, s_t):
         T_e = int(contract["T_e"])
         F_C = contract["F_C"]
 
-        print(T_s, T_e)
-
         # iterate over all t[i] that in the between T_s and T_e
         for i in range(n): # from contract cut-off 0 to n-1 that are in the contract period
             if t[i] >= T_s and t[i] < T_e:
