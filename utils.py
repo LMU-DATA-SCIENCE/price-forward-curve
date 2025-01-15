@@ -654,3 +654,18 @@ def filter_independent(forwards):
     independent_df = forwards.loc[independent_indices].reset_index(drop=True)
     return independent_df
 
+def check_arbitragefree(forecast,forwards,verbose=False):
+    arbitragefree = True
+    corrected = forecast["corrected"]
+    forecast.timestamp = pd.to_datetime(forecast.ds, utc=True)-pd.Timedelta(hours=1)
+    #loop over all forwards df rows
+    for index, row in forwards.iterrows():
+        if row["Begin"]>=forecast["timestamp"].min() and row["End"]<=forecast["timestamp"].max():
+            #average over corrected forecast values
+            avg = corrected[(forecast["timestamp"]>=row["Begin"]) & (forecast["timestamp"]<row["End"])].mean()
+            arb_amount = np.abs(row["Settlement"]-avg)
+            if verbose:
+                print("Arbitrage amount for forward",row["Begin"],row["End"],":",arb_amount)
+            if arb_amount>=0.01:
+                arbitragefree = False
+    return arbitragefree
