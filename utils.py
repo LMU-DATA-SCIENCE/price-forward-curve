@@ -669,3 +669,64 @@ def check_arbitragefree(forecast,forwards,verbose=False):
             if arb_amount>=0.01:
                 arbitragefree = False
     return arbitragefree
+
+def arbitrage_pipeline_benth(forecast,plot_figure=False,print_arbitrage=False):
+    forecast["timestamp"] = forecast["ds"]
+    cutoff_ts = forecast['ds'].min()
+    forwards = None
+    i=0
+    while forwards is None:
+        try:
+            forwards = filter_independent(get_forwards(
+            timestamp=cutoff_ts,
+            start=forecast["timestamp"].min(),
+            end=forecast["timestamp"].max()
+        ))
+        except:
+            print("No forwards data available for date", cutoff_ts)
+            cutoff_ts = str(pd.to_datetime(cutoff_ts) - pd.Timedelta(days=1))
+            i+=1
+            if i==7:
+                print("No forwards data available within the last 7 days")
+                return 
+    print("Forwards fetched for last available date:", cutoff_ts)        
+    t, F = partition_forwards(forwards, pd.to_datetime(cutoff_ts, utc=True)-pd.Timedelta(hours=1))
+    H = construct_H(t)
+    s_t = np.array(forecast["yhat"])
+    A, b = construct_A_and_b(t, F, s_t)
+    try:
+        x, lam = solve_linear_system(H, A, b)
+    except Exception as e:
+        print("Error in solving linear system:", e)
+        print("Skipping this forecast")
+        return
+    epsilon_values = [epsilon(x, t, i) for i, _ in enumerate(forecast["yhat"])]
+    forecast["corrected"] = forecast["yhat"] + epsilon_values
+    if plot_figure:
+        fig = plot_forecast_forwards("2021-01-04", forecast, forwards)
+
+        # Add intial as a dashed red line
+        fig.add_trace(go.Scatter(
+            x=forecast["timestamp"],
+            y=forecast["corrected"],
+            mode='lines',
+            name='PFC',
+            line=dict(color='red')
+        ))
+
+        # Add the correction area as a transparent red fill
+        fig.add_trace(go.Scatter(
+            x=pd.concat([forecast["timestamp"], forecast["timestamp"][::-1]]),
+            y=pd.concat([forecast["yhat"], forecast["corrected"][::-1]]),
+            fill='toself',
+            fillcolor='rgba(255, 0, 0, 0.2)',  # Transparent red
+            line=dict(color='rgba(255, 0, 0, 0)'),
+            name='arbitrage correction \u03b5(t)'
+        ))
+        fig.show()
+    arb_free = check_arbitragefree(forecast,forwards,verbose=print_arbitrage)
+    if arb_free:
+        print("Corrected forecast is arbitrage free.")
+    else:
+        print("Corrected forecast is not arbitrage free.")
+    return forecast
