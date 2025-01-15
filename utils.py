@@ -584,10 +584,11 @@ def epsilon(x, tn, t):
     if t < tn[0] or t > tn[-1]:
         return 0
     for i in range(len(tn)-1):
-        if tn[i] <= t <= tn[i+1]:
+        if tn[i] <= t < tn[i+1]:
             break
     a, b, c, d, e = x[5*i:5*(i+1)]
-    return a*(t**4) + b*(t**3) + c*(t**2) + d*t + e
+    #return intergral over the spline from t to t+1
+    return a*((t+1)**5-t**5)/5 + b*((t+1)**4-t**4)/4 + c*((t+1)**3-t**3)/3 + d*((t+1)**2-t**2)/2 + e*(t+1-t)
 
 
 def filter_independent(forwards):
