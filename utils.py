@@ -674,17 +674,18 @@ def arbitrage_pipeline_benth(forecast,plot_figure=False,print_arbitrage=False):
     forecast["timestamp"] = forecast["ds"]
     cutoff_ts = forecast['ds'].min()
     forwards = None
+    forwards_ts = cutoff_ts
     i=0
     while forwards is None:
         try:
             forwards = filter_independent(get_forwards(
-            timestamp=cutoff_ts,
+            timestamp=forwards_ts,
             start=forecast["timestamp"].min(),
             end=forecast["timestamp"].max()
         ))
         except:
             print("No forwards data available for date", cutoff_ts)
-            cutoff_ts = str(pd.to_datetime(cutoff_ts) - pd.Timedelta(days=1))
+            forwards_ts = str(pd.to_datetime(forwards_ts) - pd.Timedelta(days=1))
             i+=1
             if i==7:
                 print("No forwards data available within the last 7 days")
