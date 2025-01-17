@@ -55,7 +55,9 @@ def tune_hyperparameters(df, param_grid, horizon):
     cutoffs = [train_start_date + interval_size * i for i in range(1, 5)]
 
     for params in all_params:
-        m = Prophet(**params).fit(df)
+        m = Prophet(**params)
+        m.add_country_holidays(country_name='DE')
+        m.fit(df)
         df_cv = cross_validation(m, cutoffs=cutoffs, horizon=horizon, parallel="processes")
         df_p = performance_metrics(df_cv, rolling_window=1)
         rmses.append(df_p['rmse'].values[0])
@@ -188,10 +190,14 @@ def main():
 
     # Define the parameter grid
     param_grid = {
+        'growth': ['flat'],
+        'yearly_seasonality': [True],
+        'weekly_seasonality': [True],
+        'daily_seasonality': [True],
         'seasonality_mode': ['additive', 'multiplicative'],
-        'changepoint_prior_scale': [0.01, 0.1, 0.5],
-        'seasonality_prior_scale': [10.0, 15.0, 20.0],
-        'holidays_prior_scale': [10.0, 15.0, 20.0],
+        'changepoint_prior_scale': [0.001, 0.01, 0.1, 0.5],
+        'seasonality_prior_scale': [0.1, 1, 10],
+        'holidays_prior_scale': [0.01, 0.1, 1, 10]
     }
 
     # Perform hyperparameter tuning
@@ -200,7 +206,10 @@ def main():
 
     # Fit the best model
     best_params = tuning_results.loc[tuning_results['rmse'].idxmin()].to_dict()
-    m = Prophet(**{k: v for k, v in best_params.items() if k != 'rmse'}).fit(train_df)
+    print("best_params", best_params)
+    m = Prophet(**{k: v for k, v in best_params.items() if k != 'rmse'})
+    m.add_country_holidays(country_name='DE')
+    m.fit(train_df)
 
     # Forecast future values
     future = m.make_future_dataframe(periods=365 * 24, freq='h')  # 1-year forecast
@@ -215,7 +224,9 @@ def main():
 
     # Refit the model on the entire dataset
     print("Refitting the model on the entire dataset for a 5-year forecast...")
-    m_full = Prophet(**{k: v for k, v in best_params.items() if k != 'rmse'}).fit(df)
+    m_full = Prophet(**{k: v for k, v in best_params.items() if k != 'rmse'})
+    m_full.add_country_holidays(country_name='DE')
+    m_full.fit(df)
 
     # Forecast 5 years into the future
     future_full = m_full.make_future_dataframe(periods=5 * 365 * 24, freq='h')  # 5-year forecast
