@@ -581,11 +581,13 @@ def epsilon(x, tn, t):
         PPoly: A piecewise polynomial object from scipy.
     """
     #find i such that t_i <= t < t_i+1
-    if t < tn[0] or t > tn[-1]:
+    if t < tn[0]:
         return 0
     for i in range(len(tn)-1):
         if tn[i] <= t < tn[i+1]:
             break
+    if t >= tn[-1]:
+        i = len(tn)-2
     a, b, c, d, e = x[5*i:5*(i+1)]
     #return intergral over the spline from t to t+1
     return a*((t+1)**5-t**5)/5 + b*((t+1)**4-t**4)/4 + c*((t+1)**3-t**3)/3 + d*((t+1)**2-t**2)/2 + e*(t+1-t)
