@@ -588,6 +588,7 @@ def epsilon(x, tn, t):
             break
     if t >= tn[-1]:
         i = len(tn)-2
+        t= tn[-1]    #return value for epsilon at last knot point
     a, b, c, d, e = x[5*i:5*(i+1)]
     #return intergral over the spline from t to t+1
     return a*((t+1)**5-t**5)/5 + b*((t+1)**4-t**4)/4 + c*((t+1)**3-t**3)/3 + d*((t+1)**2-t**2)/2 + e*(t+1-t)
@@ -659,7 +660,7 @@ def filter_independent(forwards):
 def check_arbitragefree(forecast,forwards,verbose=False):
     arbitragefree = True
     corrected = forecast["corrected"]
-    forecast.timestamp = pd.to_datetime(forecast.ds, utc=True)-pd.Timedelta(hours=1)
+    forecast.timestamp = pd.to_datetime(forecast.ds, utc=True)-pd.Timedelta(hours=2)
     #loop over all forwards df rows
     for index, row in forwards.iterrows():
         if row["Begin"]>=forecast["timestamp"].min() and row["End"]<=forecast["timestamp"].max():
@@ -692,8 +693,8 @@ def arbitrage_pipeline_benth(forecast,plot_figure=False,print_arbitrage=False):
             if i==7:
                 print("No forwards data available within the last 7 days")
                 return 
-    print("Forwards fetched for last available date:", forwards_ts)        
-    t, F = partition_forwards(forwards, pd.to_datetime(cutoff_ts, utc=True)-pd.Timedelta(hours=1))
+    print("Forwards fetched for last available date:", forwards_ts)     
+    t, F = partition_forwards(forwards, pd.to_datetime(cutoff_ts, utc=True)-pd.Timedelta(hours=2))
     H = construct_H(t)
     s_t = np.array(forecast["yhat"])
     A, b = construct_A_and_b(t, F, s_t)
@@ -706,7 +707,7 @@ def arbitrage_pipeline_benth(forecast,plot_figure=False,print_arbitrage=False):
     epsilon_values = [epsilon(x, t, i) for i, _ in enumerate(forecast["yhat"])]
     forecast["corrected"] = forecast["yhat"] + epsilon_values
     if plot_figure:
-        fig = plot_forecast_forwards("2021-01-04", forecast, forwards)
+        fig = plot_forecast_forwards(forwards_ts, forecast, forwards)
 
         # Add intial as a dashed red line
         fig.add_trace(go.Scatter(
