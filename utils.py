@@ -686,13 +686,13 @@ def arbitrage_pipeline_benth(forecast,plot_figure=False,print_arbitrage=False):
             end=forecast["timestamp"].max()
         ))
         except:
-            print("No forwards data available for date", cutoff_ts)
+            print("No forwards data available for date", forwards_ts)
             forwards_ts = str(pd.to_datetime(forwards_ts) - pd.Timedelta(days=1))
             i+=1
             if i==7:
                 print("No forwards data available within the last 7 days")
                 return 
-    print("Forwards fetched for last available date:", cutoff_ts)        
+    print("Forwards fetched for last available date:", forwards_ts)        
     t, F = partition_forwards(forwards, pd.to_datetime(cutoff_ts, utc=True)-pd.Timedelta(hours=1))
     H = construct_H(t)
     s_t = np.array(forecast["yhat"])
