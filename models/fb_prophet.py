@@ -490,7 +490,7 @@ def main():
     Main function to load data, tune Prophet hyperparameters, and display results.
     """
     # File path to the CSV data
-    file_path = '../data/Day Ahead Auction Prices.csv'
+    file_path = 'data/Day Ahead Auction Prices.csv'
 
     # Load and preprocess the data
     day_ahead = load_day_ahead_prices(file_path)
@@ -509,9 +509,9 @@ def main():
     # Define the parameter grid
     param_grid = {
         'growth': ['flat'],
-        'yearly_seasonality': [True, False],
-        'weekly_seasonality': [True, False],
-        'daily_seasonality': [True, False],
+        'yearly_seasonality': [True],
+        'weekly_seasonality': [True],
+        'daily_seasonality': [True],
         'seasonality_mode': ['additive', 'multiplicative'],
         # 'changepoint_prior_scale': [0.001, 0.01, 0.1], #  range [0.001, 0.5] 
         'seasonality_prior_scale': [0.01, 0.1, 1, 10], # range:[0.01, 10]
@@ -522,10 +522,14 @@ def main():
     horizon = '365 days'
     tuning_results = tune_hyperparameters(train_df, param_grid, horizon)
 
+    # Call the function with your data
+    fig = plot_cv_results(df, tuning_results, horizon, param_grid)
+    fig.show()
+    fig.savefig('images/cross_validation.svg',  bbox_inches="tight")
+
     # Fit the best model
-    best_params = tuning_results.loc[tuning_results['rmse'].idxmin()].to_dict()
-    print("best_params", best_params)
-    m = Prophet(**{k: v for k, v in best_params.items() if k != 'rmse'})
+    best_params = tuning_results.loc[tuning_results['avg_rmse'].idxmin()].to_dict()
+    m = Prophet(**{k: v for k, v in best_params.items() if k not in ['avg_rmse', 'avg_mae', 'fold_rmse', 'fold_mae', 'cutoff_date']})
     m.add_country_holidays(country_name='DE')
     m.fit(train_df)
 
@@ -534,15 +538,28 @@ def main():
     forecast = m.predict(future)
 
     # Evaluate model on test set
-    y_test = test_df['y'].values
-    y_pred = forecast.loc[forecast['ds'].isin(test_df['ds']), 'yhat'].values
+    y_test = test_df['y']
+    y_pred = forecast.loc[forecast['ds'].isin(test_df['ds']), 'yhat']
 
-    metrics = evaluate_model(y_test, y_pred)
-    print("Evaluation Metrics:", metrics)
+    metrics = evaluate_model(y_test.values, y_pred.values)
+
+    print(f"Out-of-sample RMSE: {metrics['RMSE']:.2f}")
+    print(f"Out-of-sample MAE: {metrics['MAE']:.2f}")
+    print(f"Out-of-sample MAPE: {metrics['MAPE']:.2f}")
+
+    # Plot the training data, 1-year forecast, and 5-year forecast
+    fig = plot_1_year_forecast(train_df, forecast)
+    fig.show()
+
+    fig = plot_residuals(y_true=test_df, y_pred=y_pred, start_date='2024-01-01', end_date='2024-02-01')
+    fig.show()
+
+    fig = plot_residuals2(y_true=test_df, y_pred=y_pred, start_date='2024-01-01', end_date='2024-02-01')
+    fig.show()
 
     # Refit the model on the entire dataset
     print("Refitting the model on the entire dataset for a 5-year forecast...")
-    m_full = Prophet(**{k: v for k, v in best_params.items() if k != 'rmse'})
+    m_full = Prophet(**{k: v for k, v in best_params.items() if k not in ['avg_rmse', 'avg_mae', 'fold_rmse', 'fold_mae', 'cutoff_date']})
     m_full.add_country_holidays(country_name='DE')
     m_full.fit(df)
 
@@ -551,11 +568,18 @@ def main():
     forecast_full = m_full.predict(future_full)
 
     # Save the 5-year forecast to a CSV file
-    forecast_full.to_csv('../data/fb_prophet_5year_forecast.csv', index=False)
+    forecast_full.to_csv('data/fb_prophet_5year_forecast.csv', index=False)
     print("5-year forecast saved as fb_prophet_5year_forecast.csv")
 
-    # Plot the training data, 1-year forecast, and 5-year forecast
-    plot_training_and_forecast(train_df, forecast, forecast_full)
+    # Plot the training data, and 5-year forecast
+    fig = plot_5_year_forecast(df, forecast_full)
+
+    # Save as SVG
+    # fig.write_image("images/5_year_forecast.svg")
+    fig.show()
+
+    fig = m_full.plot_components(forecast_full, weekly_start=1)
+    fig.savefig('images/final_prophet_components.svg',  bbox_inches="tight")
 
 if __name__ == "__main__":
     main()
