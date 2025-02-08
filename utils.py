@@ -91,7 +91,7 @@ def plot_forecast_forwards(timestamp, forecast=None, data=None):
     None
         Displays a Plotly figure with historical forwards and forecast data.
     """
-    if data is not None: # does not  with data given
+    if data is None: # does not  with data given
         data = get_forwards(timestamp, start=forecast['timestamp'].min(), end=forecast['timestamp'].max(), periods=['D', 'W', 'WE', 'M', 'Q', 'Y'])
     fig = go.Figure()
     unique_identifiers = data['Identifier'].unique()
@@ -183,179 +183,6 @@ def get_arbitrage_opportunities_in_forwards(forwards, date):
 
     return pd.DataFrame(arbitrage_opportunities)
 
-
-def get_restrictions(timestamp, start_date, end_date, data=None):
-    """
-    Generate a restriction matrix, adjusted settlement values and a contract cut-off difference matrix
-    for forward contracts over a specified date range.
-
-    Parameters:
-        timestamp (str): Date or timestamp used to fetch forward contracts if `data` is not provided.
-        start_date (str): Starting date for the restriction matrix.
-        end_date (str): Ending date for the restriction matrix.
-        data (pd.DataFrame, optional): DataFrame with contract data ('Begin', 'End', 'Settlement'). If not provided, 
-                                       data is retrieved using `get_forwards`.
-
-    Returns:
-        tuple (np.ndarray, np.ndarray):
-            - `C`: A 2D array where each row represents a contract and each column represents an hour in the specified 
-              range. Entries are 1 if the contract is active during that hour; otherwise, 0.
-            - `s`: A 1D array of settlement values adjusted by each contract’s active duration in hours.
-            - `D`: A 2D array representing the difference matrix at contract cut-off times, used in penalty calculation.
-    """
-    length = int((pd.to_datetime(end_date, utc=True) - pd.to_datetime(start_date, utc=True) + pd.Timedelta(hours=1)).total_seconds() // 3600)
-    if data is None:
-        contracts = get_forwards(timestamp, start=start_date, end=end_date)
-    else:
-        contracts = data
-    
-    s = contracts['Settlement'].values
-    d = len(s)
-    C = np.zeros((d, length))
-    D = np.zeros((d, length)) # difference matrix at contract cut-off -> used in penalty
-
-    for i in range(d):
-        start_contract = contracts.iloc[i].Begin
-        end_contract = contracts.iloc[i].End
-        
-        start_index = int((start_contract - pd.to_datetime(start_date, utc=2)).total_seconds() // 3600)
-        end_index = int((end_contract - pd.to_datetime(start_date, utc=2)).total_seconds() // 3600)
-        
-        # CONTRAINTS
-        C[i, start_index:end_index] = 1
-        s[i] = s[i] * (end_index - start_index)
-
-        # PENALTY
-        if start_index > 0:
-            D[i, start_index-1] = -1
-            D[i, start_index] = 1
-    
-    return C, s, D
-
-def optimize_with_cvxpy(yhat, A_eq, b_eq, D, lambda_1, loss):
-    """
-    Perform optimization using cvxpy and OSQP solver, aligning with scipy's objective function.
-
-    Parameters:
-        yhat (np.ndarray): Forecast values.
-        A_eq (np.ndarray): Equality constraint matrix.
-        b_eq (np.ndarray): Equality constraint vector.
-        D (np.ndarray): Matrix for penalty computation.
-        lambda_1 (float): Regularization parameter.
-        loss (str): Loss function ('L1' or 'L2').
-
-    Returns:
-        np.ndarray: Optimized forecast values.
-    """
-    x = cp.Variable(len(yhat))
-
-    # Deviation from forecast (L1 or L2 loss)
-    if loss == 'L1':
-        deviation_from_forecast = cp.norm1(x - yhat)
-    elif loss == 'L2':
-        deviation_from_forecast = cp.sum_squares(x - yhat)
-    else:
-        raise ValueError("Invalid loss function. Choose 'L1' or 'L2'.")
-
-    # Penalty term
-    penalty = lambda_1 * cp.sum_squares(D @ x)
-
-    # Objective function: Deviation + Penalty
-    objective = cp.Minimize(deviation_from_forecast + penalty)
-
-    # Constraints
-    constraints = [A_eq @ x == b_eq]
-
-    # Solve the problem
-    problem = cp.Problem(objective, constraints)
-    problem.solve(solver=cp.OSQP)
-
-    if problem.status == cp.OPTIMAL:
-        return x.value
-    else:
-        raise ValueError(f"Optimization with cvxpy failed: {problem.status}")
-
-
-def optimize_with_scipy(yhat, A_eq, b_eq, D, lambda_1, loss, scipy_method):
-    """
-    Perform optimization using scipy.optimize.minimize.
-
-    Parameters:
-        yhat (np.ndarray): Forecast values.
-        A_eq (np.ndarray): Equality constraint matrix.
-        b_eq (np.ndarray): Equality constraint vector.
-        D (np.ndarray): Matrix for penalty computation.
-        lambda_1 (float): Regularization parameter.
-        loss (str): Loss function ('L1' or 'L2').
-        scipy_method (str): Optimization method for scipy.optimize.minimize.
-
-    Returns:
-        np.ndarray: Optimized forecast values.
-    """
-    x0 = yhat
-
-    def objective_function(x):
-        if loss == 'L1':
-            deviation_from_forecast = np.sum(np.abs(x - yhat))
-        elif loss == 'L2':
-            deviation_from_forecast = np.sum(np.square(x - yhat))
-        else:
-            raise ValueError("Invalid loss function. Choose 'L1' or 'L2'.")
-        penalty = lambda_1 * np.sum(np.square(D @ x))
-        return deviation_from_forecast + penalty
-
-    constraints = {'type': 'eq', 'fun': lambda x: A_eq @ x - b_eq}
-
-    result = minimize(
-        objective_function,
-        x0,
-        method=scipy_method,
-        constraints=constraints
-    )
-
-    if result.success:
-        return result.x
-    else:
-        raise ValueError(f"Optimization with scipy failed: {result.message}")
-
-
-def arbitrage_correction(forecast, forwards, lambda_1=0.1, optimizer='scipy', scipy_method='trust-constr', loss='L2'):
-    """
-    Perform arbitrage correction with scipy or cvxpy-based solvers.
-
-    Parameters:
-        forecast (pd.DataFrame): Forecast DataFrame with 'timestamp' and 'yhat' columns.
-        forwards: Forward data for arbitrage checks.
-        lambda_1 (float): Regularization parameter.
-        optimizer (str): Optimization framework ('scipy' or 'cvxpy').
-        scipy_method (str): Method for scipy optimizer (default: 'trust-constr').
-        loss (str): Loss function for scipy optimizer ('L1' or 'L2').
-
-    Returns:
-        pd.DataFrame: Corrected forecast with columns 'timestamp' and 'yhat'.
-    """
-    yhat = np.array(forecast['yhat'].values)
-
-    start_date = forecast['timestamp'].min()
-    end_date = forecast['timestamp'].max()
-    C, s, D = get_restrictions(forecast['timestamp'].iloc[0], start_date, end_date, forwards)
-    A_eq, b_eq = C, s
-
-    # Perform optimization
-    if optimizer == 'scipy':
-        corrected_values = optimize_with_scipy(yhat, A_eq, b_eq, D, lambda_1, loss, scipy_method)
-    elif optimizer == 'cvxpy':
-        corrected_values = optimize_with_cvxpy(yhat, A_eq, b_eq, D, lambda_1, loss)
-    else:
-        raise ValueError("Invalid optimizer. Choose 'scipy' or 'cvxpy'.")
-
-    # Create DataFrame with corrected forecast
-    corrected_forecast = pd.DataFrame({
-        'timestamp': forecast['timestamp'].values,
-        'yhat': corrected_values
-    })
-
-    return corrected_forecast
 
 
 ###################################################
@@ -677,7 +504,7 @@ def arbitrage_pipeline_benth(forecast,plot_figure=False,print_arbitrage=False):
     forecast["timestamp"] = forecast["ds"]
     cutoff_ts = forecast['ds'].min()
     forwards = None
-    forwards_ts = cutoff_ts
+    forwards_ts = str(cutoff_ts)
     i=0
     while forwards is None:
         try:
@@ -730,7 +557,187 @@ def arbitrage_pipeline_benth(forecast,plot_figure=False,print_arbitrage=False):
         fig.show()
     arb_free = check_arbitragefree(forecast,forwards,verbose=print_arbitrage)
     if arb_free:
-        print("Corrected forecast is arbitrage free.")
+        print("PFC is arbitrage free.")
+        arb_free = True
     else:
-        print("Corrected forecast is not arbitrage free.")
-    return forecast
+        print("PFC is not arbitrage free.")
+        arb_free = False
+    return forecast, arb_free
+
+
+########################################################################
+# Deprecated and unused code of our first arbitrage correction approach
+########################################################################
+
+def get_restrictions(timestamp, start_date, end_date, data=None):
+    """
+    Generate a restriction matrix, adjusted settlement values and a contract cut-off difference matrix
+    for forward contracts over a specified date range.
+
+    Parameters:
+        timestamp (str): Date or timestamp used to fetch forward contracts if `data` is not provided.
+        start_date (str): Starting date for the restriction matrix.
+        end_date (str): Ending date for the restriction matrix.
+        data (pd.DataFrame, optional): DataFrame with contract data ('Begin', 'End', 'Settlement'). If not provided, 
+                                       data is retrieved using `get_forwards`.
+
+    Returns:
+        tuple (np.ndarray, np.ndarray):
+            - `C`: A 2D array where each row represents a contract and each column represents an hour in the specified 
+              range. Entries are 1 if the contract is active during that hour; otherwise, 0.
+            - `s`: A 1D array of settlement values adjusted by each contract’s active duration in hours.
+            - `D`: A 2D array representing the difference matrix at contract cut-off times, used in penalty calculation.
+    """
+    length = int((pd.to_datetime(end_date, utc=True) - pd.to_datetime(start_date, utc=True) + pd.Timedelta(hours=1)).total_seconds() // 3600)
+    if data is None:
+        contracts = get_forwards(timestamp, start=start_date, end=end_date)
+    else:
+        contracts = data
+    
+    s = contracts['Settlement'].values
+    d = len(s)
+    C = np.zeros((d, length))
+    D = np.zeros((d, length)) # difference matrix at contract cut-off -> used in penalty
+
+    for i in range(d):
+        start_contract = contracts.iloc[i].Begin
+        end_contract = contracts.iloc[i].End
+        
+        start_index = int((start_contract - pd.to_datetime(start_date, utc=2)).total_seconds() // 3600)
+        end_index = int((end_contract - pd.to_datetime(start_date, utc=2)).total_seconds() // 3600)
+        
+        # CONTRAINTS
+        C[i, start_index:end_index] = 1
+        s[i] = s[i] * (end_index - start_index)
+
+        # PENALTY
+        if start_index > 0:
+            D[i, start_index-1] = -1
+            D[i, start_index] = 1
+    
+    return C, s, D
+
+def optimize_with_cvxpy(yhat, A_eq, b_eq, D, lambda_1, loss):
+    """
+    Perform optimization using cvxpy and OSQP solver, aligning with scipy's objective function.
+
+    Parameters:
+        yhat (np.ndarray): Forecast values.
+        A_eq (np.ndarray): Equality constraint matrix.
+        b_eq (np.ndarray): Equality constraint vector.
+        D (np.ndarray): Matrix for penalty computation.
+        lambda_1 (float): Regularization parameter.
+        loss (str): Loss function ('L1' or 'L2').
+
+    Returns:
+        np.ndarray: Optimized forecast values.
+    """
+    x = cp.Variable(len(yhat))
+
+    # Deviation from forecast (L1 or L2 loss)
+    if loss == 'L1':
+        deviation_from_forecast = cp.norm1(x - yhat)
+    elif loss == 'L2':
+        deviation_from_forecast = cp.sum_squares(x - yhat)
+    else:
+        raise ValueError("Invalid loss function. Choose 'L1' or 'L2'.")
+
+    # Penalty term
+    penalty = lambda_1 * cp.sum_squares(D @ x)
+
+    # Objective function: Deviation + Penalty
+    objective = cp.Minimize(deviation_from_forecast + penalty)
+
+    # Constraints
+    constraints = [A_eq @ x == b_eq]
+
+    # Solve the problem
+    problem = cp.Problem(objective, constraints)
+    problem.solve(solver=cp.OSQP)
+
+    if problem.status == cp.OPTIMAL:
+        return x.value
+    else:
+        raise ValueError(f"Optimization with cvxpy failed: {problem.status}")
+
+
+def optimize_with_scipy(yhat, A_eq, b_eq, D, lambda_1, loss, scipy_method):
+    """
+    Perform optimization using scipy.optimize.minimize.
+
+    Parameters:
+        yhat (np.ndarray): Forecast values.
+        A_eq (np.ndarray): Equality constraint matrix.
+        b_eq (np.ndarray): Equality constraint vector.
+        D (np.ndarray): Matrix for penalty computation.
+        lambda_1 (float): Regularization parameter.
+        loss (str): Loss function ('L1' or 'L2').
+        scipy_method (str): Optimization method for scipy.optimize.minimize.
+
+    Returns:
+        np.ndarray: Optimized forecast values.
+    """
+    x0 = yhat
+
+    def objective_function(x):
+        if loss == 'L1':
+            deviation_from_forecast = np.sum(np.abs(x - yhat))
+        elif loss == 'L2':
+            deviation_from_forecast = np.sum(np.square(x - yhat))
+        else:
+            raise ValueError("Invalid loss function. Choose 'L1' or 'L2'.")
+        penalty = lambda_1 * np.sum(np.square(D @ x))
+        return deviation_from_forecast + penalty
+
+    constraints = {'type': 'eq', 'fun': lambda x: A_eq @ x - b_eq}
+
+    result = minimize(
+        objective_function,
+        x0,
+        method=scipy_method,
+        constraints=constraints
+    )
+
+    if result.success:
+        return result.x
+    else:
+        raise ValueError(f"Optimization with scipy failed: {result.message}")
+
+
+def arbitrage_correction(forecast, forwards, lambda_1=0.1, optimizer='scipy', scipy_method='trust-constr', loss='L2'):
+    """
+    Perform arbitrage correction with scipy or cvxpy-based solvers.
+
+    Parameters:
+        forecast (pd.DataFrame): Forecast DataFrame with 'timestamp' and 'yhat' columns.
+        forwards: Forward data for arbitrage checks.
+        lambda_1 (float): Regularization parameter.
+        optimizer (str): Optimization framework ('scipy' or 'cvxpy').
+        scipy_method (str): Method for scipy optimizer (default: 'trust-constr').
+        loss (str): Loss function for scipy optimizer ('L1' or 'L2').
+
+    Returns:
+        pd.DataFrame: Corrected forecast with columns 'timestamp' and 'yhat'.
+    """
+    yhat = np.array(forecast['yhat'].values)
+
+    start_date = forecast['timestamp'].min()
+    end_date = forecast['timestamp'].max()
+    C, s, D = get_restrictions(forecast['timestamp'].iloc[0], start_date, end_date, forwards)
+    A_eq, b_eq = C, s
+
+    # Perform optimization
+    if optimizer == 'scipy':
+        corrected_values = optimize_with_scipy(yhat, A_eq, b_eq, D, lambda_1, loss, scipy_method)
+    elif optimizer == 'cvxpy':
+        corrected_values = optimize_with_cvxpy(yhat, A_eq, b_eq, D, lambda_1, loss)
+    else:
+        raise ValueError("Invalid optimizer. Choose 'scipy' or 'cvxpy'.")
+
+    # Create DataFrame with corrected forecast
+    corrected_forecast = pd.DataFrame({
+        'timestamp': forecast['timestamp'].values,
+        'yhat': corrected_values
+    })
+
+    return corrected_forecast
