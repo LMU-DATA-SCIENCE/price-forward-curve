@@ -57,6 +57,7 @@ def tune_hyperparameters(df, param_grid, horizon):
     print(f"Training period: {train_start_date} to {train_end_date}")
     
     for params in all_params:
+        print(f"Training model with hyperparameters: {params}")
         m = Prophet(**params)
         m.add_country_holidays(country_name='DE')
         m.fit(df)
@@ -191,7 +192,6 @@ def plot_residuals(y_true, y_pred, start_date=None, end_date=None):
 
 
 
-
 import plotly.graph_objects as go
 import numpy as np
 from plotly.subplots import make_subplots
@@ -231,30 +231,38 @@ def plot_residuals2(y_true, y_pred, start_date=None, end_date=None):
     fig.add_trace(go.Scatter(x=y_true.index, y=y_true['y'], mode='lines', name='Actual', line=dict(color='blue')), row=1, col=1)
     fig.add_trace(go.Scatter(x=y_pred.index, y=y_pred.values, mode='lines', name='Forecast', line=dict(color='orange')), row=1, col=1)
 
-    # Fill area between actual and predicted values
-    for i in range(len(y_true)):
-        fig.add_shape(type='rect', x0=y_true.index[i], x1=y_true.index[i],
-                      y0=min(y_true['y'][i], y_pred.values[i]),
-                      y1=max(y_true['y'][i], y_pred.values[i]),
-                      fillcolor=colors[i], opacity=0.3, line_width=0, row=1, col=1)
 
     # Bottom subplot: residuals
-    fig.add_trace(go.Bar(x=residuals.index, y=residuals.values, marker_color=colors, name='Residuals'), row=2, col=1)
+    fig.add_trace(go.Bar(x=residuals.index, y=residuals.values, marker_color=colors), row=2, col=1)
+
 
     # Add horizontal lines for MAE and RMSE with annotations
     fig.add_hline(y=mae, line_dash="dot", line_color="blue", row=2, col=1)
-    fig.add_annotation(x=0.5, y=mae, text=f"MAE: {mae:.2f}", showarrow=False, font=dict(color="blue", size=12), row=2, col=1)
+    fig.add_annotation(
+        x=residuals.index[len(residuals)-1], 
+        y=mae - 20,  # Move MAE annotation up
+        text=f"MAE: {mae:.2f}", 
+        showarrow=False, 
+        font=dict(color="blue", size=12), 
+        row=2, col=1
+    )
 
     fig.add_hline(y=rmse, line_dash="dash", line_color="purple", row=2, col=1)
-    fig.add_annotation(x=0.5, y=rmse, text=f"RMSE: {rmse:.2f}", showarrow=False, font=dict(color="purple", size=12), row=2, col=1)
+    fig.add_annotation(
+        x=residuals.index[len(residuals)-1], 
+        y=rmse + 20,  # Move RMSE annotation down
+        text=f"RMSE: {rmse:.2f}", 
+        showarrow=False, 
+        font=dict(color="purple", size=12), 
+        row=2, col=1
+    )
 
-    # Update title with start and end dates
-    title = f"Residuals of 1 Year Forecast ({start_date} - {end_date})" if start_date and end_date else "Residuals of 1 Year Forecast"
+    title = f"Residuals of 1 Year Forecast ({start_date} to {end_date})" if start_date and end_date else "Residuals of 1 Year Forecast"
 
     fig.update_layout(
         title=title,
         xaxis_title="Date",
-        yaxis_title="Values",
+        yaxis_title="Price (EUR/MWh)",
         template="plotly_white",
         height=700,
         width=1000,
@@ -262,7 +270,6 @@ def plot_residuals2(y_true, y_pred, start_date=None, end_date=None):
     )
 
     return fig
-
 
 
 
@@ -286,13 +293,21 @@ def plot_cv_results(df, tuning_results, horizon, param_grid):
     best_params = best_param_set.loc[best_param_set['avg_rmse'].idxmin()]
     print("Best Hyperparameters:", best_params.to_dict())
 
+
     # Filter all 5 folds of the best parameter set
     best_folds = tuning_results[
-        (tuning_results['growth'] == best_params['growth'])
+        (tuning_results['growth'] == best_params['growth']) &
+        (tuning_results['yearly_seasonality'] == best_params['yearly_seasonality']) &
+        (tuning_results['weekly_seasonality'] == best_params['weekly_seasonality']) &
+        (tuning_results['daily_seasonality'] == best_params['daily_seasonality']) &
+        (tuning_results['seasonality_mode'] == best_params['seasonality_mode']) &
+        (tuning_results['seasonality_prior_scale'] == best_params['seasonality_prior_scale']) &
+        (tuning_results['holidays_prior_scale'] == best_params['holidays_prior_scale'])
     ]
 
     if len(best_folds) != 5:
-        print("Warning: Less than 5 folds found for the best parameter set!")
+        print(len(best_folds))
+        print(f"Warning: {len(best_folds)} folds found for the best parameter set!")
 
     fig, axes = plt.subplots(nrows=5, ncols=1, sharex=True, figsize=(10, 7))
     for i, (ax, cutoff_date) in enumerate(zip(axes, best_folds['cutoff_date'].unique())):
