@@ -1,7 +1,7 @@
 # Generating an hourly Price Forward Curve
 
 ## Overview
-This method main.py automatically creates an arbitrage free HPFC. It includes data preprocessing, hyperparameter tuning, model evaluation, forecasting seasonality five years into the future and arbitrage correction with the Benth  ethod
+This method main.py automatically creates an arbitrage free HPFC. It includes data preprocessing, hyperparameter tuning, model evaluation, forecasting seasonality five years into the future and arbitrage correction with the Benth  method
 
 ## Features
 - Loads and preprocesses day-ahead auction price data

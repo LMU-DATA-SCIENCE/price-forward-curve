@@ -101,7 +101,7 @@ def main(cutoff_date=None,params=None):
     forecast_full = forecast_full[forecast_full['ds'] >= last_date]
     forecast_full["timestamp"] = forecast_full["ds"]
 
-    pfc ,arb_free = arbitrage_pipeline_benth(forecast_full,plot_figure=True,print_arbitrage=False)
+    pfc, arb_free = arbitrage_pipeline_benth(forecast_full,plot_figure=True,print_arbitrage=False)
     pfc = pfc[['timestamp','corrected']]
 
     if cutoff_date is None:
