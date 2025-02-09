@@ -1,0 +1,1 @@
+{"growth": "flat", "yearly_seasonality": true, "weekly_seasonality": true, "daily_seasonality": true, "seasonality_mode": "multiplicative", "seasonality_prior_scale": 0.01, "holidays_prior_scale": 0.01, "avg_rmse": 81.82022315739735, "avg_mae": 62.41925684540238, "fold_rmse": 20.443759656150274, "fold_mae": 17.284054226575236}
